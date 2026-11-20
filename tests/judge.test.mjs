@@ -116,6 +116,35 @@ test('(d) role-only spam never wins except identity whitelist', async () => {
   }
 });
 
+test('(e) reordered paraphrases are accepted (>=95%)', async () => {
+  const ROLES = ['工程師', '技術員', '督導員', '指導員', '研究員', '分析員', '分析師', '規劃師', '規劃員', '查驗員', '協調員', '統籌員', '訓練員', '培訓員', '專員', '技師', '人員', '助教', '教練', '領班', '督導', '主管', '組長', '講師', '導師', '設計師', '師', '員'];
+  const fails = []; let n = 0;
+  const kitchen = occs.find((o) => o.job_title === '商用廚房設備維修調度員');
+  for (const m of ['我猜你是維修廚房設備的調度員', '你是負責廚房設備維修調度的嗎', '你是做廚房設備維修的調度員吧']) assert.equal((await resolveGuess(m, kitchen, null)).correct, true, m);
+  for (const o of occs) {
+    const T = o.job_title;
+    const role = ROLES.find((r) => T.endsWith(r) && T.length > r.length) || '';
+    const core = T.slice(0, T.length - role.length);
+    const h = Math.ceil(core.length / 2);
+    const [a, b] = [core.slice(0, h), core.slice(h)];
+    const q = Math.ceil(core.length / 3);
+    const [x, y, z] = [core.slice(0, q), core.slice(q, 2 * q), core.slice(2 * q)];
+    for (const f of [`我猜你是${b}${a}的${role}`, `你是負責${b}${a}的${role}嗎`, `你是${z}${x}${y}的${role}吧`, `是不是${b}${a}的${role}`]) {
+      n++;
+      const r = await resolveGuess(f, o, async () => ({ is_guess: true, correct: false }));
+      if (!r.correct) fails.push(`${T} <- ${f}`);
+    }
+  }
+  const rate = 1 - fails.length / n;
+  console.log(`(e) reordered paraphrase acceptance: ${n - fails.length}/${n} = ${(rate * 100).toFixed(1)}%`, fails.slice(0, 8));
+  assert.ok(rate >= 0.95, fails.slice(0, 20).join('\n'));
+});
+
+test('(f) identity role must be the head role', async () => {
+  const o = occs.find((x) => x.job_title === '校園刊物製作小記者訓練員');
+  assert.equal((await resolveGuess('你是記者嗎', o, alwaysYes)).correct, false);
+});
+
 function normalizeIncludes(t, w) { return t.includes(w); }
 
 test('(a) counts', () => {

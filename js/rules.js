@@ -136,7 +136,7 @@ const ROLE_WORDS = ['工程師', '技術員', '督導員', '指導員', '研究�
 // Specific bare roles that may be guessed on their own (everything else bare is "too generic").
 // Roles too broad to pair with a loose domain hint (軟體工程師 must not win for 軟體品質保證工程師).
 const BROAD_ROLES = ['工程師', '設計師', '分析師', '規劃師', '規劃員', '分析員', '專員', '人員', '技術員', '研究員', '查驗員', '協調員', '統籌員', '訓練員', '培訓員', '管理員', '指導員', '督導員', '師', '員', '家', '工', '手', '長', '生', '官', '匠', '商', '者'];
-// Role words that ARE the identity of a common job: if the title contains one, guessing exactly that word
+// Role words that ARE the identity of a common job: if the title ENDS with one (head role), guessing exactly that word
 // is correct even though the title's domain part only refines it (廚師 for 餐飲研發廚師).
 // Anything else that is only a role word (教練, 講師, 老師, 調度員, 維修員, 技師, 志工...) is NOT correct.
 export const IDENTITY_ROLES = ['廚師', '律師', '醫師', '醫生', '護理師', '護士', '記者', '調酒師', '藥師', '藥劑師', '獸醫', '獸醫師', '牙醫', '消防員', '警察', '會計師', '建築師', '營養師', '編輯', '司機'];
@@ -202,7 +202,7 @@ function findVariant(textNorm, variant) {
 
 // ----- Gate 1: guess intent + candidate extraction -----
 const HEDGE = '(?:該不會|應該|一定|大概|可能|其實|難道|莫非|或許|也許|八成|肯定|絕對|是不是|是否)*';
-const VERB = '(?:是|在)?(?:做|當|從事|幹|搞)?(?:是)?';
+const VERB = '(?:是|在)?(?:專門|主要|負責|專做|專攻)?(?:做|當|從事|幹|搞|負責)?(?:是)?';
 const TAIL_PARTICLE = /(?:的人|的)?(?:嗎|吧|呢|啊|喔|哦|欸|耶|啦|吶|對吧|對不對|沒錯吧|是吧|是嗎|對嗎|對不|沒錯|嘛)*$/;
 const GUESS_PATTERNS = [
   new RegExp(`(?:我猜|猜猜|猜)(?:你|妳|您)?${VERB}(.{1,16})$`),
@@ -276,7 +276,7 @@ export function matchCandidate(candidate, occupation) {
   const coreC = cc.replace(GENERIC_RE, '');
   // identity roles (small explicit whitelist)
   for (const w of IDENTITY_ROLES) {
-    if (c === w && T.includes(w)) return { ...res, verdict: 'correct', score: 1, reason: 'identity:' + w };
+    if (c === w && T.endsWith(w)) return { ...res, verdict: 'correct', score: 1, reason: 'identity:' + w };
   }
   // role-only guess (教練, 老師, 調度員, 維修技師...): never correct; warm hint if the role fits the title
   const roleOnlyFit = (cc === '' || cc.replace(GENERIC_RE, '').length < 2) && (roleOf(c) || ROLE_ONLY_EXTRA.includes(c)) &&
@@ -305,6 +305,21 @@ export function matchCandidate(candidate, occupation) {
     return { ...res, verdict: 'correct', score: 1, reason: 'role+domain' };
   }
   if (Tc.length >= 3 && cc.includes(Tc)) return { ...res, verdict: 'correct', score: 1, reason: 'superstring' };
+  // Order-insensitive paraphrase (維修廚房設備的調度員 for …廚房設備維修調度員): same characters (multiset),
+  // nearly nothing extra, and the head role still present.
+  if (T.length >= 5) {
+    const c2 = c.replace(/(?:專門|主要|負責|相關|方面|之類)|的/g, '');
+    const head = roleOf(T) || T.slice(-2);
+    if (c2.includes(head)) {
+      const cnt = new Map();
+      // leading generic modifiers (商用, 居家, 社區…) may be omitted by the player
+      const lead = T.length - (T.replace(new RegExp(`^(?:${GENERIC_RE.source})+`), '') || T).length;
+      for (const ch of T) cnt.set(ch, (cnt.get(ch) || 0) + 1);
+      let ov = 0;
+      for (const ch of c2) if (cnt.get(ch) > 0) { ov++; cnt.set(ch, cnt.get(ch) - 1); }
+      if (T.length - ov <= Math.max(lead, Math.floor(0.1 * T.length)) && ov / c2.length >= 0.9) return { ...res, verdict: 'correct', score: 1, reason: 'reorder' };
+    }
+  }
   // Borderline: substantial overlap including the tail (the "function" part) of the candidate.
   // The role word must agree too (or be absent): same topic + different role = different job.
   const roleOk = !roleOf(c) || roleOf(c) === roleOf(T);
