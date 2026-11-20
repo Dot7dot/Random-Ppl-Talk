@@ -18,22 +18,98 @@ export async function checkWebGPU() {
   try {
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) return { ok: false, reason: '找不到可用的 GPU 介面卡（WebGPU adapter）。請確認裝置與瀏覽器支援 WebGPU。' };
+    const l = adapter.limits || {};
+    const low = (l.maxBufferSize && l.maxBufferSize < LOW_LIMIT) || (l.maxStorageBufferBindingSize && l.maxStorageBufferBindingSize < LOW_LIMIT);
+    return { ok: true, lowMemory: !!low };
   } catch (e) {
     return { ok: false, reason: `WebGPU 初始化失敗：${e?.message || e}` };
   }
-  return { ok: true };
 }
 
-export function createLLM({ mock = false, modelId = MODELS[0].id } = {}) {
-  return mock ? createMockLLM() : createWebLLM(modelId);
+const LOW_LIMIT = 1024 * 1024 * 1024; // adapter buffer limits below ~1GB: prefer the 0.5B model
+export const LIGHT_MODEL = MODELS[1].id;
+
+export function isMobileDevice() {
+  try {
+    if (navigator.userAgentData?.mobile) return true;
+    if (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')) return true;
+    return navigator.maxTouchPoints > 0 && Math.min(screen.width, screen.height) < 820;
+  } catch { return false; }
 }
 
-function createWebLLM(modelId) {
+// Web-llm unloads the engine when the GPU device is lost (usually OOM); later calls throw these.
+export const isDeviceLostError = (e) => /DeviceLost|device was lost|not loaded|before calling chat|MLCEngine\.reload/i.test(`${e?.name} ${e?.message}`);
+
+export function createLLM({ mock = false, fake = false, modelId = MODELS[0].id } = {}) {
+  const llm = mock ? createMockLLM() : createWebLLM(modelId, { fake });
+  return serialize(llm);
+}
+
+// One generation at a time per engine (judge + chat must never overlap).
+function serialize(llm) {
+  let tail = Promise.resolve();
+  const queued = (fn) => (...args) => {
+    const run = tail.then(() => fn(...args));
+    tail = run.catch(() => {});
+    return run;
+  };
+  return { ...llm, chat: queued(llm.chat.bind(llm)), judge: queued(llm.judge.bind(llm)) };
+}
+
+// Conservative token estimate (CJK ~1+ token/char for Qwen, ASCII ~0.4).
+export function estimateTokens(s) {
+  let n = 0;
+  for (const ch of String(s ?? '')) n += ch.charCodeAt(0) > 0x7f ? 1.2 : 0.4;
+  return Math.ceil(n) + 4; // + per-message template overhead is added by callers
+}
+const MSG_OVERHEAD = 8;
+export const promptTokens = (messages) => messages.reduce((n, m) => n + estimateTokens(m.content) + MSG_OVERHEAD, 6);
+
+// web-llm requires: system only first, last message from user. Also merge same-role
+// neighbours and drop a leading assistant so the template stays well-formed, then drop
+// oldest turns (and finally clip the system prompt) until the prompt fits the window.
+export function fitMessages(messages, maxTokens = 160, ctx = CONTEXT_WINDOW) {
+  const budget = ctx - maxTokens - 96;
+  let sys = null;
+  const rest = [];
+  for (const m of messages) {
+    const content = String(m.content ?? '');
+    if (m.role === 'system') { if (!sys && !rest.length) sys = { role: 'system', content }; continue; }
+    const last = rest[rest.length - 1];
+    if (last && last.role === m.role) last.content += `\n${content}`;
+    else rest.push({ role: m.role, content });
+  }
+  while (rest.length && rest[0].role !== 'user') rest.shift();
+  if (!rest.length || rest[rest.length - 1].role !== 'user') throw new Error('沒有可送出的使用者訊息');
+  const build = () => (sys ? [sys, ...rest] : [...rest]);
+  while (promptTokens(build()) > budget && rest.length > 1) {
+    rest.shift();
+    while (rest.length > 1 && rest[0].role !== 'user') rest.shift();
+  }
+  while (promptTokens(build()) > budget && sys && sys.content.length > 200) {
+    sys = { role: 'system', content: sys.content.slice(0, Math.floor(sys.content.length * 0.85)) };
+  }
+  const lastU = rest[rest.length - 1];
+  while (promptTokens(build()) > budget && lastU.content.length > 20) lastU.content = lastU.content.slice(0, Math.floor(lastU.content.length * 0.8));
+  return build();
+}
+
+const withTimeout = (p, ms, onTimeout) => new Promise((resolve, reject) => {
+  const t = setTimeout(() => { try { onTimeout?.(); } catch { /* ignore */ } reject(new Error('模型回應逾時')); }, ms);
+  p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+});
+
+function createWebLLM(modelId, { fake = false } = {}) {
   let engine = null;
   return {
-    kind: 'webllm',
+    kind: fake ? 'fake' : 'webllm',
     modelId,
     async init(onProgress = () => {}) {
+      if (fake) {
+        const { CreateFakeEngine } = await import('./fake-engine.js');
+        engine = await CreateFakeEngine(modelId, { initProgressCallback: (r) => onProgress({ progress: r.progress ?? 0, text: r.text || '' }) }, { context_window_size: CONTEXT_WINDOW });
+        return;
+      }
       const gpu = await checkWebGPU();
       if (!gpu.ok) throw new Error(gpu.reason);
       onProgress({ progress: 0, text: '載入 WebLLM 程式庫…' });
@@ -45,10 +121,24 @@ function createWebLLM(modelId) {
       );
     },
     async chat(messages, { temperature = 0.8, max_tokens = 160, top_p = 0.9 } = {}) {
-      const out = await engine.chat.completions.create({
-        messages, temperature, top_p, max_tokens, stream: false,
-        frequency_penalty: 0.3,
-      });
+      if (!engine) throw new Error('模型尚未載入');
+      const fitted = fitMessages(messages, max_tokens);
+      // Fresh KV cache every call: prompts differ (judge vs chat), never rely on prefix reuse.
+      try { await engine.resetChat?.(); } catch (e) { console.warn('resetChat failed', e); }
+      let out;
+      try {
+        out = await withTimeout(
+        engine.chat.completions.create({
+          messages: fitted, temperature, top_p, max_tokens, stream: false,
+          frequency_penalty: 0.3,
+        }),
+        90000,
+        () => engine.interruptGenerate?.(),
+        );
+      } catch (e) {
+        if (isDeviceLostError(e)) { const d = new Error('GPU 裝置已中斷（多半是記憶體不足）'); d.name = 'DeviceLostError'; d.deviceLost = true; engine = null; throw d; }
+        throw e;
+      }
       return (out.choices?.[0]?.message?.content || '').trim();
     },
     async judge({ occupation, text }) {

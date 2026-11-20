@@ -1,23 +1,64 @@
 import { loadRandomPersona } from './data.js';
-import { createLLM, MODELS, checkWebGPU } from './llm.js';
+import { createLLM, MODELS, checkWebGPU, isMobileDevice, isDeviceLostError, LIGHT_MODEL } from './llm.js';
+import { installDebug, dbg } from './debug.js';
 import { fetchSkill, parseSkill, buildSystemPrompt, trimHistory, appearanceLine } from './prompt.js';
 import { REFUSAL_LINE, turnsForLevel, isDirectJobQuestion, deterministicGuess, leaksJob } from './rules.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const MOCK = params.get('mock') === '1';
+const FAKE = !MOCK && params.get('fake') === '1';
+const SAVE_KEY = 'rpt-session-v1';
 const BEST_KEY = 'rpt-best-level';
 
 const state = {
   level: 1, turnsLeft: 10, persona: null, history: [], used: new Set(),
-  busy: false, over: false, won: false, llm: null, skill: null, started: false,
+  busy: false, over: false, resumed: false, won: false, llm: null, skill: null, started: false,
 };
+
+const MODEL_KEY = 'rpt-model';
+const GEN_KEY = 'rpt-generating';
+const CRASH_KEY = 'rpt-crashes';
+const ss = { get: (k) => { try { return sessionStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { sessionStorage.setItem(k, v); } catch { /* ignore */ } }, del: (k) => { try { sessionStorage.removeItem(k); } catch { /* ignore */ } } };
+const getModelPref = () => { try { return localStorage.getItem(MODEL_KEY); } catch { return null; } };
+const setModelPref = (m) => { try { localStorage.setItem(MODEL_KEY, m); } catch { /* ignore */ } };
+const markGenerating = () => ss.set(GEN_KEY, String(Date.now()));
+const clearGenerating = () => ss.del(GEN_KEY);
+const crashOk = () => ss.del(CRASH_KEY);
 
 function getBest() {
   try { return Number(localStorage.getItem(BEST_KEY)) || 0; } catch { return 0; }
 }
 function setBest(n) {
   try { localStorage.setItem(BEST_KEY, String(n)); } catch { /* ignore */ }
+}
+
+// Persist the in-progress game so an accidental page reload (mobile tab killed, GPU reset...)
+// drops the player back into the same game instead of the start screen.
+function saveSession() {
+  try {
+    if (!state.persona || state.over) { sessionStorage.removeItem(SAVE_KEY); return; }
+    sessionStorage.setItem(SAVE_KEY, JSON.stringify({
+      mode: MOCK ? 'mock' : FAKE ? 'fake' : 'real', modelId: $('modelSel').value,
+      level: state.level, turnsLeft: state.turnsLeft, persona: state.persona,
+      history: state.history, used: [...state.used],
+      log: [...$('chat').querySelectorAll('.msg:not(.typing)')].map((el) => ({ kind: el.className.replace('msg ', ''), who: el.querySelector('.who')?.textContent || '', text: el.lastChild?.textContent || '' })),
+    }));
+  } catch (e) { dbg('save-failed', e); }
+}
+function loadSession() {
+  try {
+    const d = JSON.parse(sessionStorage.getItem(SAVE_KEY) || 'null');
+    const mode = MOCK ? 'mock' : FAKE ? 'fake' : 'real';
+    return d && d.mode === mode && d.persona && d.turnsLeft > 0 ? d : null;
+  } catch { return null; }
+}
+
+function renderGuest() {
+  const { info } = state.persona;
+  $('guest').innerHTML = '';
+  const b = document.createElement('b'); b.textContent = info.display_name;
+  $('guest').append(b, ` · ${info.age_years} 歲 · ${info.gender}`, document.createElement('br'), `外觀：${appearanceLine(info)}`);
 }
 
 function renderStats() {
@@ -62,39 +103,50 @@ async function newRound() {
     return;
   }
   state.used.add(state.persona.ids.occupation);
-  const { info } = state.persona;
-  $('guest').innerHTML = '';
-  const b = document.createElement('b'); b.textContent = info.display_name;
-  $('guest').append(b, ` · ${info.age_years} 歲 · ${info.gender}`, document.createElement('br'), `外觀：${appearanceLine(info)}`);
+  renderGuest();
   addMsg('sys', `第 ${state.level} 關：你有 ${state.turnsLeft} 次機會。每則訊息都算一次。`);
   renderStats();
+  saveSession();
   setBusy(false);
   $('input').focus();
 }
 
 async function guestReply() {
-  const system = buildSystemPrompt(state.persona, state.skill);
-  const messages = [{ role: 'system', content: system }, ...trimHistory(state.history)];
-  let reply = '';
+  let compact = false;
+  let lastErr = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    reply = await state.llm.chat(messages, { persona: state.persona, temperature: attempt ? 0.6 : 0.8 });
+    let reply = '';
+    try {
+      const system = buildSystemPrompt(state.persona, state.skill, { forceCompact: compact });
+      const messages = [{ role: 'system', content: system }, ...trimHistory(state.history, compact ? 4 : 8, compact ? 400 : 900)];
+      reply = await state.llm.chat(messages, { persona: state.persona, temperature: attempt ? 0.6 : 0.8 });
+    } catch (e) {
+      dbg('chat-error', e);
+      lastErr = e;
+      compact = true; // e.g. context window exceeded: retry once with the compact prompt
+      continue;
+    }
     if (reply && !leaksJob(reply, state.persona.occupation)) return reply;
   }
+  if (lastErr) throw lastErr;
   return '（晃了晃杯子）嗯……這個話題先跳過，再給我點酒吧。';
 }
 
 async function onSend(text) {
-  if (state.busy || state.over) return;
-  text = text.trim();
-  if (!text) return;
+  if (state.busy || state.over || !state.persona) return false;
+  text = String(text ?? '').trim();
+  if (!text) return false;
   setBusy(true);
-  addMsg('me', text);
+  markGenerating();
+  const me = addMsg('me', text);
+  const histLen = state.history.length;
   state.history.push({ role: 'user', content: text });
   state.turnsLeft--; // every user message counts, including guesses and refused questions
   renderStats();
   const occ = state.persona.occupation;
   let outcome = 'chat';
   let reply = '';
+  let failed = null;
   const typing = addMsg('guest typing', '…', state.persona.info.display_name);
   try {
     // 1. Guess check FIRST: deterministic, then LLM judge.
@@ -104,7 +156,7 @@ async function onSend(text) {
       try {
         const j = await state.llm.judge({ occupation: occ, text });
         correct = !!(j.is_guess && j.correct);
-      } catch (e) { console.warn('judge failed', e); }
+      } catch (e) { dbg('judge-error', e); }
     }
     if (correct) {
       outcome = 'win';
@@ -116,21 +168,42 @@ async function onSend(text) {
       reply = await guestReply();
     }
   } catch (e) {
-    reply = `（出了點問題：${e.message}）`;
+    failed = e;
+    dbg('send-error', e);
   }
   typing.remove();
+  clearGenerating();
+  if (!failed) crashOk();
+  if (failed) {
+    // Model failure: never leave the game. Refund the turn, drop the failed exchange, let them retry.
+    state.history.length = histLen;
+    state.turnsLeft++;
+    me.remove();
+    renderStats();
+    if (failed.deviceLost || isDeviceLostError(failed)) {
+      await recoverLLM();
+    }
+    addMsg('sys', `⚠️ 客人這次沒聽清楚（${failed?.message || failed}）。這則訊息不算次數，請再送一次。`);
+    $('input').value = text;
+    setBusy(false);
+    saveSession();
+    return false;
+  }
   if (reply) {
     addMsg('guest', reply, state.persona.info.display_name);
     state.history.push({ role: 'assistant', content: reply });
   }
-  if (outcome === 'win') return win();
-  if (state.turnsLeft <= 0) return lose();
+  if (outcome === 'win') { win(); return true; }
+  if (state.turnsLeft <= 0) { lose(); return true; }
+  saveSession();
   setBusy(false);
   $('input').focus();
+  return true;
 }
 
 function win() {
   state.over = true; state.won = true;
+  saveSession();
   const reached = state.level;
   if (reached > getBest()) setBest(reached);
   renderStats();
@@ -145,6 +218,7 @@ function win() {
 
 function lose() {
   state.over = true;
+  saveSession();
   const reached = state.level;
   if (reached > getBest()) setBest(reached);
   renderStats();
@@ -170,18 +244,38 @@ function showCard(kind, title, sub, answer, btnText, onClick) {
   c.scrollIntoView({ block: 'nearest' });
 }
 
-async function startGame() {
+// Engine died (GPU device lost / OOM): reload it with the light model so the player can retry.
+async function recoverLLM() {
+  try {
+    setModelPref(LIGHT_MODEL);
+    addMsg('sys', '手機記憶體不足，正在切換為輕量模型…');
+    markGenerating();
+    state.llm = createLLM({ mock: MOCK, fake: FAKE, modelId: LIGHT_MODEL });
+    await state.llm.init(() => {});
+    clearGenerating();
+    addMsg('sys', '已切換為輕量模型（Qwen2.5 0.5B）。');
+  } catch (e) {
+    clearGenerating();
+    dbg('recover-failed', e);
+    addMsg('sys', `無法重新載入模型：${e.message || e}。請關閉其他分頁或改用桌面瀏覽器。`);
+  }
+}
+
+async function startGame(resume = null, notice = '') {
   $('startBtn').disabled = true;
   $('startErr').hidden = true;
   $('loading').hidden = false;
+  markGenerating(); // model loading can also OOM the tab
   try {
     state.skill = parseSkill(await fetchSkill('./skill.md'));
-    state.llm = createLLM({ mock: MOCK, modelId: $('modelSel').value });
+    state.llm = createLLM({ mock: MOCK, fake: FAKE, modelId: getModelPref() && resume ? getModelPref() : resume?.modelId || $('modelSel').value });
     await state.llm.init(({ progress, text }) => {
       $('barFill').style.width = `${Math.round((progress || 0) * 100)}%`;
       $('loadText').textContent = text || '載入中…';
     });
+    clearGenerating();
   } catch (e) {
+    clearGenerating();
     $('startErr').textContent = `無法啟動：${e.message || e}`;
     $('startErr').hidden = false;
     $('startBtn').disabled = false;
@@ -192,32 +286,70 @@ async function startGame() {
   $('topbar').hidden = false;
   $('gameView').hidden = false;
   state.started = true;
+  if (resume) {
+    Object.assign(state, { level: resume.level, turnsLeft: resume.turnsLeft, persona: resume.persona, history: resume.history, used: new Set(resume.used), over: false, won: false });
+    $('chat').innerHTML = '';
+    for (const m of resume.log || []) addMsg(m.kind, m.text, m.who);
+    addMsg('sys', '已從中斷處恢復遊戲。');
+    if (notice) addMsg('sys', notice);
+    renderGuest(); renderStats(); setBusy(false);
+    return;
+  }
   await newRound();
 }
 
 async function boot() {
   const sel = $('modelSel');
   for (const m of MODELS) sel.add(new Option(m.label, m.id));
-  if (MOCK) {
-    sel.add(new Option('模擬模式（不使用模型）', 'mock'));
-    sel.value = 'mock';
+  if (MOCK || FAKE) {
+    sel.add(new Option(MOCK ? '模擬模式（不使用模型）' : '假引擎（開發測試）', MOCK ? 'mock' : 'fake'));
+    sel.value = MOCK ? 'mock' : 'fake';
   }
   $('stBest').textContent = getBest();
-  if (!MOCK) {
+  // Default model: light one on phones / low-limit adapters, 1.5B on desktop; remembered choice wins.
+  let preferLight = isMobileDevice();
+  if (!MOCK && !FAKE) {
     const gpu = await checkWebGPU();
     if (!gpu.ok) {
       $('gpuWarn').textContent = gpu.reason;
       $('gpuWarn').hidden = false;
       $('startBtn').disabled = true;
-    }
+    } else if (gpu.lowMemory) preferLight = true;
   }
-  $('startBtn').addEventListener('click', startGame);
+  const pref = getModelPref();
+  if (pref && MODELS.some((m) => m.id === pref)) $('modelSel').value = pref;
+  else if (preferLight && !MOCK && !FAKE) $('modelSel').value = LIGHT_MODEL;
+  $('modelSel').addEventListener('change', () => setModelPref($('modelSel').value));
+  $('startBtn').addEventListener('click', () => startGame());
   $('form').addEventListener('submit', (e) => {
     e.preventDefault();
     const v = $('input').value;
     $('input').value = '';
-    onSend(v);
+    onSend(v).catch((err) => { dbg('onSend-crash', err); setBusy(false); });
   });
+  // Crash detection: the generating flag survives only if the page died mid-load/generation.
+  let notice = '';
+  if (ss.get(GEN_KEY)) {
+    clearGenerating();
+    const crashes = (Number(ss.get(CRASH_KEY)) || 0) + 1;
+    ss.set(CRASH_KEY, String(crashes));
+    dbg('crash-detected', `count=${crashes}`);
+    const wasLight = (getModelPref() || '') === LIGHT_MODEL;
+    if (crashes >= 2) {
+      ss.del(SAVE_KEY); ss.del(CRASH_KEY);
+      setModelPref(LIGHT_MODEL);
+      if (MODELS.some((m) => m.id === LIGHT_MODEL)) $('modelSel').value = LIGHT_MODEL;
+      $('startErr').textContent = '頁面連續當機，可能是手機記憶體不足。請關閉其他分頁或 App、重新整理後再試，或改用桌面瀏覽器。已為你選好輕量模型。';
+      $('startErr').hidden = false;
+      return;
+    }
+    notice = wasLight ? '頁面意外重新整理，可能是記憶體不足。建議關閉其他分頁。' : '手機記憶體不足，已自動切換為輕量模型';
+    setModelPref(LIGHT_MODEL);
+    if (MODELS.some((m) => m.id === LIGHT_MODEL)) $('modelSel').value = LIGHT_MODEL;
+  }
+  const saved = loadSession();
+  if (saved && !$('startBtn').disabled) { state.resumed = true; dbg('resume', `level=${saved.level} turns=${saved.turnsLeft}`); startGame(saved, notice); }
+  else if (notice) { $('startErr').textContent = notice; $('startErr').hidden = false; }
 }
 
 window.__game = {
@@ -226,4 +358,5 @@ window.__game = {
   send: onSend,
 };
 
-boot();
+installDebug();
+boot().catch((e) => dbg('boot-error', e));
