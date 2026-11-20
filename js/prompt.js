@@ -160,19 +160,22 @@ export function trimHistory(messages, maxMessages = 8, maxChars = 900) {
   return recent;
 }
 
-export function buildJudgeMessages(occupation, userText) {
-  const sys = `你是遊戲裁判，只輸出一行 JSON，不要任何其他文字。
-祕密職業：${occupation.job_title}
-行業：${occupation.industry}
-工作場所：${hideTitle(occupation.workplace_type, occupation)}
-主要職責：${(occupation.responsibilities || []).slice(0, 3).map((r) => r.task).join('、')}
-
-判斷調酒師訊息：
-- is_guess：訊息是否明確猜測「對方的職業是某某」（疑問或肯定皆可）。閒聊、問工具、問作息都不是猜測。
-- correct：猜測的職業與祕密職業是同一種職業才為 true；同義詞、簡稱、英文縮寫（如 QA）、常見別稱都算對；範圍太籠統（如「做IT的」「上班族」）或是不同職業算錯。is_guess 為 false 時 correct 必為 false。
-輸出格式：{"is_guess":true或false,"correct":true或false}`;
+// Strict yes/no: are the candidate phrase and the secret job the same occupation?
+// Only ever called for borderline candidates; the result is further gated in rules.js (acceptJudge).
+export function buildJudgeMessages(occupation, candidate) {
+  const sys = `你是遊戲裁判。判斷「B」是不是和「A」同一種職業（同義詞、簡稱、別稱、英文縮寫算是；範圍太籠統、相近但不同的職業、或B根本不是職業名稱，例如問候、閒聊，都算否）。只回答一個字：是 或 否。`;
+  const shot = (a, b, ans) => [
+    { role: 'user', content: `A：${a}\nB：${b}` },
+    { role: 'assistant', content: ans },
+  ];
   return [
     { role: 'system', content: sys },
-    { role: 'user', content: `調酒師的訊息：「${userText}」` },
+    ...shot('商用廚房設備維修調度員', '嗨嗨', '否'),
+    ...shot('軟體品質保證工程師', 'QA', '是'),
+    ...shot('國小教師', '你好', '否'),
+    ...shot('軟體品質保證工程師', '軟體工程師', '否'),
+    ...shot('寵物美容師', '工程師', '否'),
+    ...shot('國小教師', '老師', '是'),
+    { role: 'user', content: `A：${occupation.job_title}\nB：${candidate}` },
   ];
 }

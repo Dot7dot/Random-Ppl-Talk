@@ -8,8 +8,8 @@
 // Regression test for the bug "嗨嗨" was judged a correct guess (win card) when the
 // LLM judge hallucinates. The judge is forced in ?fake=1 mode by intercepting the
 // module js/fake-engine.js with page.route and rewriting the judge reply:
-//   yes  -> {"is_guess":true,"correct":true}   (worst case: 0.5B model always says yes)
-//   no   -> {"is_guess":false,"correct":false} (judge never recognises a guess)
+//   yes  -> 是 (worst case: 0.5B model always says yes)
+//   no   -> 否 (judge never recognises a guess)
 // No game code is modified. If the rewrite target is not found the run FAILS (the hook
 // is broken), it never silently passes.
 //
@@ -38,12 +38,12 @@ const NON_GUESSES = [
   '嗨嗨', '你好', '嗨', '哈哈', '今天好累喔', '來杯啤酒', '謝謝',
   '你住哪裡？', '你有養寵物嗎？', '😀', '？',
 ];
-const FORCED = {
-  yes: { is_guess: true, correct: true },
-  no: { is_guess: false, correct: false },
-};
+// The judge answers 是/否 (parseYesNo in js/rules.js). Forced reply per mode.
+const FORCED = { yes: '是', no: '否' };
 const JUDGE_RUNS = ['yes', 'no'];
-const JUDGE_LINE = /reply = JSON\.stringify\(\{ is_guess: guess, correct: false \}\);/;
+// Anchor: the fake engine's completion line. Judge requests (system prompt contains 遊戲裁判)
+// get their reply overridden right before it, so the hook does not depend on the judge body.
+const JUDGE_ANCHOR = 'const completion = Math.min(';
 
 const results = [];
 function record(scenario, name, ok, detail = '') {
@@ -75,6 +75,7 @@ function pickWrongGuesses(occs, answerOcc, rules, count = 2) {
   const suf = sameSuffix(2).length ? sameSuffix(2) : sameSuffix(1);
   if (suf.length) out.push({ kind: `same-suffix(${suf.length ? suf[0].job_title.slice(-2) : ''})`, text: suf[Math.floor(Math.random() * suf.length)].job_title });
   const pool = others.filter((o) => !out.some((x) => x.text === o.job_title));
+  if (!suf.length) console.log(`note: no other title shares the suffix of "${ans}"; only an "other" wrong guess is sent`);
   out.push({ kind: 'other', text: pool[Math.floor(Math.random() * pool.length)].job_title });
   return out.slice(0, count);
 }
@@ -123,9 +124,9 @@ async function openGame(browser, base, judgeMode, harness) {
   await page.route('**/js/fake-engine.js', async (route) => {
     const resp = await route.fetch();
     let body = await resp.text();
-    if (JUDGE_LINE.test(body)) {
-      const forced = JSON.stringify(FORCED[judgeMode]);
-      body = body.replace(JUDGE_LINE, `window.__judgeCalls = (window.__judgeCalls || 0) + 1; reply = '${forced}';`);
+    if (body.split(JUDGE_ANCHOR).length === 2) {
+      const forced = FORCED[judgeMode];
+      body = body.replace(JUDGE_ANCHOR, `if (sys.includes('遊戲裁判')) { window.__judgeCalls = (window.__judgeCalls || 0) + 1; reply = '${forced}'; }\n      ${JUDGE_ANCHOR}`);
       harness.hookApplied = true;
     }
     await route.fulfill({ status: 200, contentType: 'application/javascript', body, headers: { 'cache-control': 'no-store' } });
@@ -278,8 +279,11 @@ async function runMode(browser, base, judgeMode, rules, occs, log) {
       await page.waitForTimeout(100);
     }
     const judgeCalls = await page.evaluate(() => window.__judgeCalls || 0);
-    record(`${judgeMode}-judge`, 'judge hook fired (rewrite applied, judge was called)',
-      harness.hookApplied && judgeCalls > 0, `hookApplied=${harness.hookApplied} judgeCalls=${judgeCalls}`);
+    // Harness validity: the forced-judge rewrite must have been applied. The number of judge
+    // calls is informational only: a fixed game may legitimately skip the judge for clear cases.
+    record(`${judgeMode}-judge`, 'forced-judge hook applied to fake engine',
+      harness.hookApplied, `hookApplied=${harness.hookApplied}`);
+    log.push(`${judgeMode}-judge: window.__judgeCalls at end of run = ${judgeCalls}`);
     record(`${judgeMode}-judge`, 'no page errors / console errors / failed requests',
       harness.errors.length === 0, harness.errors.slice(0, 3).join(' | '));
   } finally {
