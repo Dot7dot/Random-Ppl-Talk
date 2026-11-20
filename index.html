@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14100e">
+<title>Random ppl talk 🍸</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar" id="topbar" hidden>
+    <div class="stat"><span class="k">關卡</span><span class="v" id="stLevel">1</span></div>
+    <div class="stat"><span class="k">剩餘次數</span><span class="v" id="stTurns">10</span></div>
+    <div class="stat"><span class="k">最佳紀錄</span><span class="v" id="stBest">0</span></div>
+  </header>
+
+  <section id="start" class="panel">
+    <h1>🍸 Random ppl talk</h1>
+    <p class="lead">你是一位調酒師。每晚都有陌生人坐到吧台前，跟他們聊聊天，在次數用完之前猜出他們的職業。</p>
+    <ul class="rules">
+      <li>關卡越高，可聊的次數越少（第 1～5 關 10 次，每 5 關減 1 次，最少 3 次）。</li>
+      <li>你送出的每一則訊息都算一次，包含猜答案與被拒絕的提問。</li>
+      <li>不能直接問「你的職業是什麼」，那樣就不好玩了。</li>
+      <li>想猜的時候，直接說出來就好，例如「你是不是老師？」</li>
+    </ul>
+    <label class="field">模型
+      <select id="modelSel"></select>
+    </label>
+    <p class="hint">模型在你的裝置上執行（WebGPU），第一次需下載，之後會快取。</p>
+    <p id="gpuWarn" class="warn" hidden></p>
+    <button id="startBtn" class="primary">開始營業</button>
+    <div id="loading" hidden>
+      <div class="bar"><div id="barFill"></div></div>
+      <p id="loadText" class="hint">準備中…</p>
+    </div>
+    <p id="startErr" class="warn" hidden></p>
+  </section>
+
+  <main id="gameView" hidden>
+    <div class="intro" id="guest"></div>
+    <div id="chat" class="chat" aria-live="polite"></div>
+    <div id="endCard" class="card" hidden></div>
+    <form id="form" class="composer" autocomplete="off">
+      <input id="input" type="text" placeholder="跟客人聊聊，或直接猜職業…" enterkeyhint="send" maxlength="200">
+      <button id="sendBtn" type="submit" class="primary">送出</button>
+    </form>
+  </main>
+</div>
+<script type="module" src="js/game.js"></script>
+</body>
+</html>
