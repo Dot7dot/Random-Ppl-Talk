@@ -134,6 +134,8 @@ const ALIASES = [
 // Role words (stripped to get the "core" of a title), longest first.
 const ROLE_WORDS = ['工程師', '技術員', '督導員', '指導員', '研究員', '分析員', '分析師', '規劃師', '規劃員', '查驗員', '協調員', '統籌員', '訓練員', '培訓員', '服務員', '管理員', '專員', '技師', '人員', '助教', '教練', '領班', '督導', '主管', '組長', '講師', '導師', '設計師', '編輯', '師', '員', '家', '工', '手', '長', '生', '官', '匠', '商', '者'];
 // Specific bare roles that may be guessed on their own (everything else bare is "too generic").
+// Roles too broad to pair with a loose domain hint (軟體工程師 must not win for 軟體品質保證工程師).
+const BROAD_ROLES = ['工程師', '設計師', '分析師', '規劃師', '規劃員', '分析員', '專員', '人員', '技術員', '研究員', '查驗員', '協調員', '統籌員', '訓練員', '培訓員', '管理員', '指導員', '督導員', '師', '員', '家', '工', '手', '長', '生', '官', '匠', '商', '者'];
 // Role words that ARE the identity of a common job: if the title contains one, guessing exactly that word
 // is correct even though the title's domain part only refines it (廚師 for 餐飲研發廚師).
 // Anything else that is only a role word (教練, 講師, 老師, 調度員, 維修員, 技師, 志工...) is NOT correct.
@@ -278,7 +280,7 @@ export function matchCandidate(candidate, occupation) {
   }
   // role-only guess (教練, 老師, 調度員, 維修技師...): never correct; warm hint if the role fits the title
   const roleOnlyFit = (cc === '' || cc.replace(GENERIC_RE, '').length < 2) && (roleOf(c) || ROLE_ONLY_EXTRA.includes(c)) &&
-    (T.includes(c) || (roleOf(c) && roleOf(c) === roleOf(T)) || T.includes(cc.replace(GENERIC_RE, '') || '\0') );
+    (T.includes(c) || (roleOf(c) && roleOf(c) === roleOf(T)) || (cc && T.includes(cc)) );
   if (cc === '' || (coreC.length < 2 && (roleOf(c) || ROLE_ONLY_EXTRA.includes(c)))) {
     return { ...res, roleOnly: !!roleOnlyFit, reason: 'role-only' };
   }
@@ -297,6 +299,10 @@ export function matchCandidate(candidate, occupation) {
     if (suffix || (cc.length >= 4 && (!prefix || cc.length >= 0.6 * Tc.length))) {
       return { ...res, verdict: 'correct', score: 1, reason: 'substring' };
     }
+  }
+  // role + some domain overlap: 「市集教練」for …市集…教練 (same role word, domain term found in the title)
+  if (roleOf(c) && !BROAD_ROLES.includes(roleOf(c)) && roleOf(c) === roleOf(T) && cc.length >= 2 && Tc.includes(cc)) {
+    return { ...res, verdict: 'correct', score: 1, reason: 'role+domain' };
   }
   if (Tc.length >= 3 && cc.includes(Tc)) return { ...res, verdict: 'correct', score: 1, reason: 'superstring' };
   // Borderline: substantial overlap including the tail (the "function" part) of the candidate.

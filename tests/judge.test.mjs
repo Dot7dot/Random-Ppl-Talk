@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { resolveGuess } from '../js/rules.js';
+import { resolveGuess, IDENTITY_ROLES } from '../js/rules.js';
 
 const dir = new URL('../data/occupations/', import.meta.url);
 const occs = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort()
@@ -51,7 +51,8 @@ test('(b2) aliases / short forms', async () => {
   for (const m of ['你是QA嗎', '你是測試工程師吧', '軟體測試？', '你是做軟體品質保證的吧']) assert.equal((await resolveGuess(m, qa, null)).correct, true, m);
   for (const m of ['你是軟體工程師嗎', '工程師', '你是工程師嗎', '你是做IT的嗎', '上班族？', '你是上班族吧', '你是在醫院工作的嗎', '你是員工嗎', '師', '員', '工作']) assert.equal((await resolveGuess(m, qa, alwaysYes)).correct, false, m);
   const kitchen = occs.find((o) => o.job_title === '商用廚房設備維修調度員');
-  for (const m of ['你是廚房設備維修的吧', '你是設備維修的嗎', '你是調度員嗎', '你是維修員吧', '你是維修技師嗎']) assert.equal((await resolveGuess(m, kitchen, null)).correct, true, m);
+  for (const m of ['你是廚房設備維修的吧', '你是設備維修的嗎', '你是廚房設備調度的嗎']) assert.equal((await resolveGuess(m, kitchen, null)).correct, true, m);
+  for (const m of ['你是調度員嗎', '你是維修員吧', '你是維修技師嗎']) { const r = await resolveGuess(m, kitchen, alwaysYes); assert.equal(r.correct, false, m); assert.equal(r.roleOnly, true, m); }
   for (const m of ['你是廚師嗎', '嗨嗨']) assert.equal((await resolveGuess(m, kitchen, alwaysYes)).correct, false, m);
   const cook = occs.find((o) => o.job_title === '餐飲研發廚師');
   assert.equal((await resolveGuess('你是廚師嗎', cook, null)).correct, true);
@@ -89,6 +90,33 @@ test('(c2) short-form guesses of other occupations (informational, must stay tin
   console.log(`(c2) short-form false positives: ${fp.length}/${n}`, fp.slice(0, 10));
   assert.equal(fp.length, 0, fp.join('\n'));
 });
+
+test('(d) role-only spam never wins except identity whitelist', async () => {
+  const roles = ['教練', '講師', '老師', '助教', '調度員', '主管', '專員', '顧問', '技師', '技術員', '操作員', '檢查員', '協調員', '管理員', '志工', '維修員', '維修師', '維修技師', '工程師', '設計師', '分析員', '督導', '領班', '組長', '師傅', '員', '師', '研究員', '規劃員', '查驗員', '指導員', '分析師', '店員', '老闆', '上班族', '工作人員', ...IDENTITY_ROLES];
+  const counts = {}; const bad = []; let hints = 0;
+  for (const w of roles) {
+    counts[w] = 0;
+    for (const o of occs) for (const m of [`你是${w}嗎？`, w, `我猜你是${w}吧`]) {
+      const r = await resolveGuess(m, o, alwaysYes);
+      if (r.correct) {
+        counts[w]++;
+        if (!(IDENTITY_ROLES.includes(w) && normalizeIncludes(o.job_title, w))) bad.push(`${o.job_title} <- ${m}`);
+      }
+      if (r.roleOnly) hints++;
+    }
+  }
+  const wins = Object.entries(counts).filter(([, n]) => n).map(([w, n]) => `${w}:${n / 3}`);
+  console.log(`(d) role-only wins per word (titles of 400; only whitelist expected): ${wins.join(' ') || 'none'}; hint replies: ${hints}`);
+  assert.equal(bad.length, 0, bad.slice(0, 20).join('\n'));
+  const get = (t) => occs.find((o) => o.job_title === t);
+  const yes = async () => ({ is_guess: true, correct: true });
+  assert.equal((await resolveGuess('你是教練嗎', get('巷弄週末市集新攤入場教練'), yes)).roleOnly, true);
+  for (const [t, m] of [['巷弄週末市集新攤入場教練', '你是市集教練嗎'], ['舊衣布料再用拆解志工教練', '你是拆解教練吧'], ['鐵路行車調度員', '你是鐵路調度員嗎'], ['自行車維修技師', '你是自行車技師嗎'], ['鐘錶維修師', '你是鐘錶維修嗎'], ['餐飲研發廚師', '廚師？']]) {
+    assert.equal((await resolveGuess(m, get(t), null)).correct, true, `${t} <- ${m}`);
+  }
+});
+
+function normalizeIncludes(t, w) { return t.includes(w); }
 
 test('(a) counts', () => {
   console.log(`(a) non-guess trials: ${occs.length} occupations x ${NON_GUESS.length} messages = ${occs.length * NON_GUESS.length}, wins: ${stats.nonGuessWins}`);
