@@ -2,7 +2,9 @@ import { loadRandomPersona } from './data.js';
 import { createLLM, MODELS, checkWebGPU, isMobileDevice, isDeviceLostError, LIGHT_MODEL } from './llm.js';
 import { installDebug, dbg } from './debug.js';
 import { fetchSkill, parseSkill, buildSystemPrompt, trimHistory, appearanceLine } from './prompt.js';
-import { REFUSAL_LINE, turnsForLevel, isDirectJobQuestion, deterministicGuess, leaksJob } from './rules.js';
+import { REFUSAL_LINE, turnsForLevel, isDirectJobQuestion, resolveGuess, leaksJob } from './rules.js';
+const NEAR_LINE = '（笑了笑）有點接近喔！';
+const ROLE_HINT_LINE = '（眨眨眼）方向對了一半，再說具體一點是哪一種？';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -150,13 +152,17 @@ async function onSend(text) {
   const typing = addMsg('guest typing', '…', state.persona.info.display_name);
   try {
     // 1. Guess check FIRST: deterministic, then LLM judge.
-    let correct = deterministicGuess(text, occ);
+    // Deterministic gates decide; the LLM judge only breaks ties on borderline candidates (see rules.js).
     const direct = isDirectJobQuestion(text);
-    if (!correct && !direct) {
-      try {
-        const j = await state.llm.judge({ occupation: occ, text });
-        correct = !!(j.is_guess && j.correct);
-      } catch (e) { dbg('judge-error', e); }
+    let correct = false;
+    let near = false;
+    let roleOnly = false;
+    if (!direct) {
+      const r = await resolveGuess(text, occ, (a) => state.llm.judge(a));
+      correct = r.correct;
+      near = r.near;
+      roleOnly = r.roleOnly;
+      dbg('guess', { candidate: r.candidate, verdict: r.verdict, score: r.score, correct });
     }
     if (correct) {
       outcome = 'win';
@@ -166,6 +172,8 @@ async function onSend(text) {
     } else {
       // 3. In-character reply.
       reply = await guestReply();
+      if (roleOnly) reply = `${ROLE_HINT_LINE}${reply}`;
+      else if (near) reply = `${NEAR_LINE}${reply}`;
     }
   } catch (e) {
     failed = e;

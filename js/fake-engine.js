@@ -45,8 +45,7 @@ export async function CreateFakeEngine(modelId, engineConfig = {}, chatOpts = {}
       const sys = req.messages[0].role === 'system' ? req.messages[0].content : '';
       let reply;
       if (sys.includes('遊戲裁判')) {
-        const guess = /是不是|是.{1,8}嗎|你是.{1,10}吧|猜/.test(last.content);
-        reply = JSON.stringify({ is_guess: guess, correct: false });
+        reply = '否'; // strict judge stub: never confirms anything
       } else {
         reply = ['嗯，今天真的有點累，先來杯威士忌吧。', '工作上的事情說不完，反正每天都很忙。', '休假的時候我只想睡到自然醒。', '這杯酒不錯，你調的？', '我常常要盯著一堆東西看，眼睛都花了。'][calls % 5];
       }

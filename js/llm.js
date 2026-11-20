@@ -1,6 +1,6 @@
 // On-device LLM (WebLLM, WebGPU) with a mock backend for ?mock=1.
 import { buildJudgeMessages } from './prompt.js';
-import { parseJudge, deterministicGuess } from './rules.js';
+import { parseYesNo, matchCandidate } from './rules.js';
 
 export const WEBLLM_VERSION = '0.2.79';
 export const WEBLLM_URL = `https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${WEBLLM_VERSION}/+esm`;
@@ -141,9 +141,10 @@ function createWebLLM(modelId, { fake = false } = {}) {
       }
       return (out.choices?.[0]?.message?.content || '').trim();
     },
-    async judge({ occupation, text }) {
-      const raw = await this.chat(buildJudgeMessages(occupation, text), { temperature: 0, max_tokens: 40 });
-      return parseJudge(raw);
+    async judge({ occupation, candidate }) {
+      if (!candidate) return { is_guess: false, correct: false };
+      const raw = await this.chat(buildJudgeMessages(occupation, candidate), { temperature: 0, max_tokens: 4 });
+      return { is_guess: true, correct: parseYesNo(raw) };
     },
   };
 }
@@ -165,10 +166,11 @@ function createMockLLM() {
       const last = messages[messages.length - 1]?.content || '';
       return mockReply(persona, last, turn);
     },
-    async judge({ occupation, text }) {
-      const correct = deterministicGuess(text, occupation);
-      const is_guess = correct || /是不是|是.{1,8}嗎|你是.{1,10}吧|猜/.test(text);
-      return { is_guess, correct };
+    async judge({ occupation, candidate }) {
+      // Not permissive: only confirms when the candidate really overlaps the title.
+      if (!candidate) return { is_guess: false, correct: false };
+      const m = matchCandidate(candidate, occupation);
+      return { is_guess: true, correct: m.verdict === 'correct' || (m.verdict === 'borderline' && m.score >= 0.7) };
     },
   };
 }
