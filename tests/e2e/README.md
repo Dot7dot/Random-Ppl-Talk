@@ -42,12 +42,12 @@ node tests/e2e/playtest.cjs fake
 
 ## 對抗式裁判測試（adversarial.cjs）
 
-`adversarial.cjs` 針對「LLM 裁判幻覺」設計：在 `?fake=1` 模式下強制裁判的回覆，不修改任何遊戲程式碼。做法是用 Playwright `page.route` 攔截 `js/fake-engine.js`，把假裁判的回覆改寫成固定值：
+`adversarial.cjs` 針對「LLM 裁判幻覺」設計：在 `?fake=1` 模式下強制裁判的回覆，不修改任何遊戲程式碼。做法是用 Playwright `page.route` 攔截 `js/fake-engine.js`，在假裁判回覆處改寫成固定的「是／否」：
 
 | 模式 | 裁判回覆 | 用途 |
 | --- | --- | --- |
-| yes | `{"is_guess":true,"correct":true}` | 最壞情況（0.5B 模型永遠說「是」）：非猜測訊息不得過關 |
-| no | `{"is_guess":false,"correct":false}` | 裁判永遠不認可：正確職業全名仍必須過關 |
+| yes | `是` | 最壞情況（0.5B 模型永遠說「是」）：非猜測訊息不得過關 |
+| no | `否` | 裁判永遠不認可：正確職業全名仍必須過關 |
 
 ```bash
 node tests/e2e/adversarial.cjs
@@ -59,4 +59,5 @@ node tests/e2e/adversarial.cjs
 - 正確職業全名：必須過關，過關卡顯示正確答案。
 - 若改寫目標找不到（`js/fake-engine.js` 的裁判行被改動），測試會直接失敗，不會默默通過。
 - 結束碼：全部通過為 `0`，有失敗為 `1`。截圖存放於 `ADVERSARIAL_SHOTS`（預設為 scratchpad 下的 `adversarial/`）。
-- 注意：yes 模式下一旦誤判過關，該位客人會提前結束（遊戲已結束，無法再送訊息），因此該位客人的錯誤猜測不會被測到；修正後應能完整測到。
+- 注意：yes 模式下一旦誤判過關，該位客人會提前結束（遊戲已結束，無法再送訊息），因此該位客人的其餘訊息不會被測到。
+- 修正後的遊戲只在「模糊候選」時才呼叫裁判，因此這些訊息下裁判實際上不會被呼叫（`__judgeCalls` 為 0，僅作記錄，不列為失敗）。

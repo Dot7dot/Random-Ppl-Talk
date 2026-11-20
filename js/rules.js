@@ -75,9 +75,6 @@ const ALIASES = [
   ['護理師', ['護士', '護理人員']],
   ['醫師', ['醫生']],
   ['教師', ['老師']],
-  ['講師', ['老師']],
-  ['導師', ['老師']],
-  ['助教', ['老師']],
   ['會計師', ['會計']],
   ['社會工作', ['社工']],
   ['行銷', ['marketing']],
@@ -91,7 +88,7 @@ const ALIASES = [
   ['平面設計', ['graphicdesigner']],
   ['程式設計', ['程式設計師', '碼農']],
   ['前端工程師', ['前端', '網頁工程師', 'frontend']],
-  ['商用廚房設備維修', ['廚房設備維修', '設備維修', '維修調度', '維修員', '維修技師', '維修師傅', '廚房維修', '廚具維修']],
+  ['商用廚房設備維修', ['廚房設備維修', '設備維修', '維修調度', '廚房設備調度', '廚房維修', '廚具維修', '廚房設備維修員', '廚房設備維修技師']],
   ['餐飲研發廚師', ['廚師', '主廚', '大廚', '料理人']],
   ['烘焙', ['烘焙師', '麵包師', '麵包師傅', '烘焙師傅', '麵包烘焙師']],
   ['營養師', ['營養師']],
@@ -124,8 +121,7 @@ const ALIASES = [
   ['都市樹木', ['樹醫生', '樹木醫生', '樹醫', '樹藝師']],
   ['音響工程', ['音控', '音響師', '音控師', '混音師']],
   ['土木工程', ['土木技師', '營造工程師', '土木']],
-  ['鐵路行車', ['調度員', '行車調度員', '鐵路調度員']],
-  ['訓練師', ['訓練員']],
+  ['鐵路行車', ['行車調度員', '鐵路調度員', '鐵路行車員']],
   ['客製家具', ['家具師傅', '家具木工', '木工師傅']],
   ['水彩插畫', ['畫家', '插畫師']],
   ['婚宴外燴', ['外燴']],
@@ -138,9 +134,14 @@ const ALIASES = [
 // Role words (stripped to get the "core" of a title), longest first.
 const ROLE_WORDS = ['工程師', '技術員', '督導員', '指導員', '研究員', '分析員', '分析師', '規劃師', '規劃員', '查驗員', '協調員', '統籌員', '訓練員', '培訓員', '服務員', '管理員', '專員', '技師', '人員', '助教', '教練', '領班', '督導', '主管', '組長', '講師', '導師', '設計師', '編輯', '師', '員', '家', '工', '手', '長', '生', '官', '匠', '商', '者'];
 // Specific bare roles that may be guessed on their own (everything else bare is "too generic").
-const SPECIFIC_ROLES = ['領班', '教練', '講師', '導師', '督導', '組長', '助教', '編輯', '調度員', '口譯員', '導覽員', '飼育員', '譯者', '編劇'];
+// Role words that ARE the identity of a common job: if the title contains one, guessing exactly that word
+// is correct even though the title's domain part only refines it (廚師 for 餐飲研發廚師).
+// Anything else that is only a role word (教練, 講師, 老師, 調度員, 維修員, 技師, 志工...) is NOT correct.
+export const IDENTITY_ROLES = ['廚師', '律師', '醫師', '醫生', '護理師', '護士', '記者', '調酒師', '藥師', '藥劑師', '獸醫', '獸醫師', '牙醫', '消防員', '警察', '會計師', '建築師', '營養師', '編輯', '司機'];
+// Extra bare-role words (besides ROLE_WORDS suffixes) that trigger the "right direction, be more specific" hint.
+const ROLE_ONLY_EXTRA = ['老師', '志工', '師傅', '老闆', '店員', '操作員', '檢查員', '技術人員'];
 // Function/topic words too common to identify a title on their own.
-const GENERIC_WORDS = ['資料', '分析', '查驗', '查核', '檢驗', '驗收', '管理', '協調', '指導', '服務', '研究', '營運', '訓練', '培訓', '統籌', '方案', '規劃', '設計', '工程', '技術', '行政', '製作', '企劃', '專業', '作業', '現場', '社區', '地方', '使用', '操作', '教學', '回饋', '交接', '配置', '維護', '督導', '工作', '上班', '職員', '員工', '助理', '顧問', '主管', '經理', '人員', '專員', '技師', '工程師', '師傅', '老闆', '老師', '醫生', '商用', '居家', '室內', '公共', '公園', '校園', '住宅', '博物館', '客製', '小量', '手作', '獨立', '大學', '中央', '一般', '各種', '相關', '某種'];
+const GENERIC_WORDS = ['調度', '維修', '操作', '檢查', '巡檢', '巡查', '接待', '志工', '資料', '分析', '查驗', '查核', '檢驗', '驗收', '管理', '協調', '指導', '服務', '研究', '營運', '訓練', '培訓', '統籌', '方案', '規劃', '設計', '工程', '技術', '行政', '製作', '企劃', '專業', '作業', '現場', '社區', '地方', '使用', '操作', '教學', '回饋', '交接', '配置', '維護', '督導', '工作', '上班', '職員', '員工', '助理', '顧問', '主管', '經理', '人員', '專員', '技師', '工程師', '師傅', '老闆', '老師', '醫生', '商用', '居家', '室內', '公共', '公園', '校園', '住宅', '博物館', '客製', '小量', '手作', '獨立', '大學', '中央', '一般', '各種', '相關', '某種'];
 const GENERIC_RE = new RegExp(GENERIC_WORDS.slice().sort((a, b) => b.length - a.length).join('|'), 'g');
 
 const NEG_BEFORE = /(?:不是|不像|不會是|不太像|並非|才不是|不可能是|不做|沒在做|不當)$/;
@@ -271,10 +272,15 @@ export function matchCandidate(candidate, occupation) {
   const Tc = stripRole(T);
   const cc = stripRole(c);
   const coreC = cc.replace(GENERIC_RE, '');
-  if (cc === '') {
-    // bare role word like 「師」「員」「工程師」: too generic, except a few specific roles that end the title
-    if (SPECIFIC_ROLES.includes(c) && T.endsWith(c)) return { ...res, verdict: 'correct', score: 1, reason: 'role' };
-    return { ...res, reason: 'generic' };
+  // identity roles (small explicit whitelist)
+  for (const w of IDENTITY_ROLES) {
+    if (c === w && T.includes(w)) return { ...res, verdict: 'correct', score: 1, reason: 'identity:' + w };
+  }
+  // role-only guess (教練, 老師, 調度員, 維修技師...): never correct; warm hint if the role fits the title
+  const roleOnlyFit = (cc === '' || cc.replace(GENERIC_RE, '').length < 2) && (roleOf(c) || ROLE_ONLY_EXTRA.includes(c)) &&
+    (T.includes(c) || (roleOf(c) && roleOf(c) === roleOf(T)) || T.includes(cc.replace(GENERIC_RE, '') || '\0') );
+  if (cc === '' || (coreC.length < 2 && (roleOf(c) || ROLE_ONLY_EXTRA.includes(c)))) {
+    return { ...res, roleOnly: !!roleOnlyFit, reason: 'role-only' };
   }
   const bg = bigrams(cc);
   const tg = bigrams(T);
@@ -318,7 +324,7 @@ export function judgeGuess(text, occupation) {
     const m = matchCandidate(t, occupation);
     if (m.verdict === 'correct') return { candidate: t, ...m };
   }
-  if (!candidate) return { candidate: null, verdict: 'none', score: 0, near: false };
+  if (!candidate) return { candidate: null, verdict: 'none', score: 0, near: false, roleOnly: false };
   return { candidate, ...matchCandidate(candidate, occupation) };
 }
 
@@ -341,7 +347,7 @@ export async function resolveGuess(text, occupation, judgeFn) {
       if (acceptJudge(g, j)) return { correct: true, near: false, ...g };
     } catch { /* judge failure = not correct */ }
   }
-  return { correct: false, near: !!g.near || g.verdict === 'borderline', ...g };
+  return { ...g, correct: false, near: !!g.near || g.verdict === 'borderline', roleOnly: !!g.roleOnly };
 }
 
 // Does a persona reply leak the secret title?

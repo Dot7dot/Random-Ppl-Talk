@@ -4,6 +4,7 @@ import { installDebug, dbg } from './debug.js';
 import { fetchSkill, parseSkill, buildSystemPrompt, trimHistory, appearanceLine } from './prompt.js';
 import { REFUSAL_LINE, turnsForLevel, isDirectJobQuestion, resolveGuess, leaksJob } from './rules.js';
 const NEAR_LINE = '（笑了笑）有點接近喔！';
+const ROLE_HINT_LINE = '（眨眨眼）方向對了一半，再說具體一點是哪一種？';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -155,10 +156,12 @@ async function onSend(text) {
     const direct = isDirectJobQuestion(text);
     let correct = false;
     let near = false;
+    let roleOnly = false;
     if (!direct) {
       const r = await resolveGuess(text, occ, (a) => state.llm.judge(a));
       correct = r.correct;
       near = r.near;
+      roleOnly = r.roleOnly;
       dbg('guess', { candidate: r.candidate, verdict: r.verdict, score: r.score, correct });
     }
     if (correct) {
@@ -169,7 +172,8 @@ async function onSend(text) {
     } else {
       // 3. In-character reply.
       reply = await guestReply();
-      if (near) reply = `${NEAR_LINE}${reply}`;
+      if (roleOnly) reply = `${ROLE_HINT_LINE}${reply}`;
+      else if (near) reply = `${NEAR_LINE}${reply}`;
     }
   } catch (e) {
     failed = e;
