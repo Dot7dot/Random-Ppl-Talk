@@ -101,6 +101,17 @@ Say '本機 AI 模式：模型在你自己的電腦上執行，不會連到任�
 if (-not [Environment]::Is64BitOperatingSystem) { Fail '需要 64 位元的 Windows。' }
 if (-not (Test-Path -LiteralPath (Join-Path $GameDir 'index.html'))) { Fail "找不到遊戲檔案（$GameDir）。請確認有把整個 RandomPplTalk 資料夾完整解壓縮。" }
 
+# llama.cpp first: a binary problem should fail in seconds, not after the 5 GB model download.
+$prepared = $false
+$prepVariants = @('vulkan', 'cpu')
+if ($CpuOnly) { $prepVariants = @('cpu') }
+$prepErr = ''
+foreach ($v in $prepVariants) {
+    try { & $Setup -What $v; $prepared = $true; break }
+    catch { $prepErr = $_.Exception.Message; Say "無法準備 $v 版：$prepErr" 'Yellow' }
+}
+if (-not $prepared) { Fail "無法取得 llama.cpp，已停止（尚未下載模型）。$([Environment]::NewLine)$prepErr" }
+
 # Model
 if (-not $Model -and $env:RPT_MODEL) { $Model = $env:RPT_MODEL }
 $ModelFile = @{ '8b' = 'Qwen3-8B-Q4_K_M.gguf'; '4b' = 'Qwen3-4B-Q4_K_M.gguf' }[$SizeKey]

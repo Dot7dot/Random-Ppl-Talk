@@ -10,7 +10,15 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 $ProgressPreference = 'SilentlyContinue'
 
 $Root = Split-Path -Parent $PSScriptRoot
-$LlamaTag = 'b12767'   # pinned llama.cpp release; assets are llama-<tag>-bin-win-<backend>-x64.zip
+# llama.cpp releases: assets are llama-<tag>-bin-win-<backend>-x64.zip. Some tags (e.g. b12767) were
+# never published with binaries (404), so keep an ordered list of tags verified to have Windows assets.
+$LlamaTags = @('b12774', 'b12778', 'b12779')
+# Test hooks (also usable for mirrors): override download base URL / API URL.
+$LlamaBase = 'https://github.com/ggml-org/llama.cpp/releases/download'
+if ($env:RPT_LLAMA_BASE) { $LlamaBase = $env:RPT_LLAMA_BASE.TrimEnd('/') }
+$LlamaApi = 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
+if ($env:RPT_LLAMA_API) { $LlamaApi = $env:RPT_LLAMA_API }
+$ReleasePage = 'https://github.com/ggml-org/llama.cpp/releases'
 $Models = @{
     '8b' = @{
         File = 'Qwen3-8B-Q4_K_M.gguf'; MinBytes = [int64]4500000000; NeedDiskGB = 7; WarnRamGB = 12
@@ -45,7 +53,8 @@ function Get-FreeGB([string]$Path) {
 }
 
 # Resumable download: curl.exe (ships with Windows 10 1803+), BITS as fallback.
-function Get-File([string[]]$Urls, [string]$Dest, [int64]$MinBytes) {
+# -Fast (llama.cpp binaries): short connect timeout, never BITS (it retries a 404 for a very long time).
+function Get-File([string[]]$Urls, [string]$Dest, [int64]$MinBytes, [switch]$Fast) {
     $part = "$Dest.part"
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     foreach ($u in $Urls) {
@@ -61,8 +70,19 @@ function Get-File([string[]]$Urls, [string]$Dest, [int64]$MinBytes) {
         for ($try = 1; $try -le 3; $try++) {
             $code = 1
             if ($curl) {
-                & $curl.Source -L --fail --retry 5 --retry-delay 3 --connect-timeout 30 -C - --progress-bar -o $part $u
+                $ct = 30
+                if ($Fast) { $ct = 20 }
+                & $curl.Source -L --fail --retry 5 --retry-delay 3 --connect-timeout $ct -C - --progress-bar -o $part $u
                 $code = $LASTEXITCODE
+            } elseif ($Fast) {
+                try {
+                    if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
+                    Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $part -TimeoutSec 600 -Headers @{ 'User-Agent' = 'RandomPplTalk' }
+                    $code = 0
+                } catch {
+                    $code = 1
+                    if ($_.Exception.Message -match '404|403|410') { $code = 22 }
+                }
             } else {
                 try {
                     if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
@@ -91,27 +111,82 @@ function Get-File([string[]]$Urls, [string]$Dest, [int64]$MinBytes) {
     return $false
 }
 
+# Releases from the GitHub API (prereleases included) that ship a Windows zip for this backend.
+# Never uses /releases/latest: it can point at a tag without binaries.
+function Get-ApiCandidates([string]$Variant) {
+    $list = @()
+    try {
+        $rels = Invoke-RestMethod -UseBasicParsing -Uri $LlamaApi -TimeoutSec 20 -Headers @{ 'User-Agent' = 'RandomPplTalk'; 'Accept' = 'application/vnd.github+json' }
+        foreach ($r in @($rels)) {
+            foreach ($a in @($r.assets)) {
+                if ($a.name -match "^llama-b\d+-bin-win-$Variant-x64\.zip$") {
+                    $list += [pscustomobject]@{ Tag = [string]$r.tag_name; Url = [string]$a.browser_download_url; Name = [string]$a.name }
+                    break
+                }
+            }
+        }
+    } catch { Write-Host "  查詢 GitHub 版本清單失敗：$($_.Exception.Message)" }
+    return $list
+}
+
 function Install-Llama([string]$Variant) {
     $dir = Join-Path $Root "bin\$Variant"
     if (Find-Server $dir) { return }
     $binRoot = Join-Path $Root 'bin'
     New-Item -ItemType Directory -Force -Path $binRoot | Out-Null
-    $asset = "llama-$LlamaTag-bin-win-$Variant-x64.zip"
     Write-Host ''
-    Write-Host "== 下載 llama.cpp ($Variant 版，約數十 MB) =="
-    $zip = Join-Path $binRoot $asset
-    $urls = @("https://github.com/ggml-org/llama.cpp/releases/download/$LlamaTag/$asset")
-    $ok = Get-File $urls $zip ([int64]5000000)
-    if (-not $ok) {
-        # Pinned asset unreachable: ask the GitHub API for the newest release that has this backend.
-        Write-Host '  固定版本下載失敗，嘗試查詢最新版本…'
-        try {
-            $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest' -Headers @{ 'User-Agent' = 'RandomPplTalk' }
-            $a = $rel.assets | Where-Object { $_.name -match "bin-win-$Variant-x64\.zip$" } | Select-Object -First 1
-            if ($a) { $zip = Join-Path $binRoot $a.name; $ok = Get-File @($a.browser_download_url) $zip ([int64]5000000) }
-        } catch { Write-Host "  查詢失敗：$($_.Exception.Message)" }
+    Write-Host "== 準備 llama.cpp ($Variant 版，約數十 MB) =="
+    $zip = $null
+    $tag = $null
+    $ok = $false
+
+    # 1) A zip the user placed manually in bin\ wins over downloading.
+    $manual = Get-ChildItem -LiteralPath $binRoot -Filter "llama-*-bin-win-$Variant-x64.zip" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Length -ge 5000000 } | Sort-Object Name -Descending | Select-Object -First 1
+    if ($manual) {
+        Write-Host "  使用手動放置的檔案：$($manual.Name)"
+        $zip = $manual.FullName
+        if ($manual.Name -match '^llama-(b\d+)-') { $tag = $Matches[1] } else { $tag = 'manual' }
+        $ok = $true
     }
-    if (-not $ok) { throw "無法下載 llama.cpp ($Variant)。請檢查網路，或手動把 $asset 解壓縮到 $dir" }
+
+    # 2) Pinned/known-good tags in order; a 404 moves on to the next one immediately.
+    $tried = @{}
+    if (-not $ok) {
+        foreach ($t in $LlamaTags) {
+            $tried[$t] = $true
+            $asset = "llama-$t-bin-win-$Variant-x64.zip"
+            $zip = Join-Path $binRoot $asset
+            Write-Host "  嘗試版本 $t …"
+            if (Get-File @("$LlamaBase/$t/$asset") $zip ([int64]5000000) -Fast) { $tag = $t; $ok = $true; break }
+        }
+    }
+
+    # 3) Ask the GitHub API for any release (incl. prereleases) that has the asset.
+    if (-not $ok) {
+        Write-Host '  已知版本都無法下載，查詢 GitHub 上其他可用的版本…'
+        $n = 0
+        foreach ($c in (Get-ApiCandidates $Variant)) {
+            if ($tried.ContainsKey($c.Tag)) { continue }
+            $tried[$c.Tag] = $true
+            $n++
+            if ($n -gt 6) { break }
+            $zip = Join-Path $binRoot $c.Name
+            Write-Host "  嘗試版本 $($c.Tag) …"
+            if (Get-File @($c.Url) $zip ([int64]5000000) -Fast) { $tag = $c.Tag; $ok = $true; break }
+        }
+    }
+
+    if (-not $ok) {
+        $nl = [Environment]::NewLine
+        throw ("無法下載 llama.cpp ($Variant 版)。可能是網路問題，或 GitHub 上該版本沒有附上 Windows 檔案。$nl" +
+            "請手動下載：$nl" +
+            "  1. 用瀏覽器開啟 $ReleasePage$nl" +
+            "  2. 選一個有 Assets 的版本（建議 $($LlamaTags[0])），下載 llama-bXXXX-bin-win-$Variant-x64.zip$nl" +
+            "  3. 把這個 zip 檔直接放進資料夾：$binRoot（不用解壓縮），再重新執行啟動檔$nl" +
+            "     （也可以自己解壓縮到：$dir，需包含 llama-server.exe）")
+    }
+
     Write-Host '  解壓縮中…'
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
     try {
@@ -119,11 +194,12 @@ function Install-Llama([string]$Variant) {
     } catch {
         Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
-        throw "解壓縮失敗：$($_.Exception.Message)"
+        throw "解壓縮失敗：$($_.Exception.Message)（壓縮檔已刪除，請重新執行；若是手動下載的檔案請重新下載）"
     }
     Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
-    if (-not (Find-Server $dir)) { throw "解壓縮後找不到 llama-server.exe（$dir）" }
-    Write-Host '  llama.cpp 準備完成。'
+    if (-not (Find-Server $dir)) { throw "解壓縮後找不到 llama-server.exe（$dir）。請確認下載的是 llama-bXXXX-bin-win-$Variant-x64.zip" }
+    try { Set-Content -LiteralPath (Join-Path $binRoot 'version.txt') -Value $tag -Encoding ASCII } catch { }
+    Write-Host "  llama.cpp 準備完成（版本 $tag）。"
 }
 
 function Test-System([string]$ModelSize) {
