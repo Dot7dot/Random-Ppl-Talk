@@ -1,1 +1,1 @@
-{ "type": "module", "private": true, "scripts": { "test": "node --test tests/rules.test.mjs tests/judge.test.mjs" } }
+{ "type": "module", "private": true, "scripts": { "test": "node --test tests/rules.test.mjs tests/judge.test.mjs", "build:zip": "node scripts/build-zip.mjs" } }

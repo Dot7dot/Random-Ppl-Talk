@@ -1,5 +1,5 @@
 import { loadRandomPersona } from './data.js';
-import { createLLM, MODELS, checkWebGPU, isMobileDevice, isDeviceLostError, LIGHT_MODEL } from './llm.js';
+import { createLLM, NO_SERVER_MSG } from './llm.js';
 import { installDebug, dbg } from './debug.js';
 import { fetchSkill, parseSkill, buildSystemPrompt, trimHistory, appearanceLine } from './prompt.js';
 import { REFUSAL_LINE, turnsForLevel, isDirectJobQuestion, resolveGuess, leaksJob } from './rules.js';
@@ -18,16 +18,6 @@ const state = {
   busy: false, over: false, resumed: false, won: false, llm: null, skill: null, started: false,
 };
 
-const MODEL_KEY = 'rpt-model';
-const GEN_KEY = 'rpt-generating';
-const CRASH_KEY = 'rpt-crashes';
-const ss = { get: (k) => { try { return sessionStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { sessionStorage.setItem(k, v); } catch { /* ignore */ } }, del: (k) => { try { sessionStorage.removeItem(k); } catch { /* ignore */ } } };
-const getModelPref = () => { try { return localStorage.getItem(MODEL_KEY); } catch { return null; } };
-const setModelPref = (m) => { try { localStorage.setItem(MODEL_KEY, m); } catch { /* ignore */ } };
-const markGenerating = () => ss.set(GEN_KEY, String(Date.now()));
-const clearGenerating = () => ss.del(GEN_KEY);
-const crashOk = () => ss.del(CRASH_KEY);
-
 function getBest() {
   try { return Number(localStorage.getItem(BEST_KEY)) || 0; } catch { return 0; }
 }
@@ -35,13 +25,13 @@ function setBest(n) {
   try { localStorage.setItem(BEST_KEY, String(n)); } catch { /* ignore */ }
 }
 
-// Persist the in-progress game so an accidental page reload (mobile tab killed, GPU reset...)
+// Persist the in-progress game so an accidental page reload (tab refreshed, server hiccup...)
 // drops the player back into the same game instead of the start screen.
 function saveSession() {
   try {
     if (!state.persona || state.over) { sessionStorage.removeItem(SAVE_KEY); return; }
     sessionStorage.setItem(SAVE_KEY, JSON.stringify({
-      mode: MOCK ? 'mock' : FAKE ? 'fake' : 'real', modelId: $('modelSel').value,
+      mode: MOCK ? 'mock' : FAKE ? 'fake' : 'real',
       level: state.level, turnsLeft: state.turnsLeft, persona: state.persona,
       history: state.history, used: [...state.used],
       log: [...$('chat').querySelectorAll('.msg:not(.typing)')].map((el) => ({ kind: el.className.replace('msg ', ''), who: el.querySelector('.who')?.textContent || '', text: el.lastChild?.textContent || '' })),
@@ -113,15 +103,15 @@ async function newRound() {
   $('input').focus();
 }
 
-async function guestReply() {
+async function guestReply(onToken) {
   let compact = false;
   let lastErr = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     let reply = '';
     try {
       const system = buildSystemPrompt(state.persona, state.skill, { forceCompact: compact });
-      const messages = [{ role: 'system', content: system }, ...trimHistory(state.history, compact ? 4 : 8, compact ? 400 : 900)];
-      reply = await state.llm.chat(messages, { persona: state.persona, temperature: attempt ? 0.6 : 0.8 });
+      const messages = [{ role: 'system', content: system }, ...trimHistory(state.history, compact ? 6 : 20, compact ? 800 : 2400)];
+      reply = await state.llm.chat(messages, { persona: state.persona, temperature: attempt ? 0.6 : 0.8, onToken });
     } catch (e) {
       dbg('chat-error', e);
       lastErr = e;
@@ -129,6 +119,7 @@ async function guestReply() {
       continue;
     }
     if (reply && !leaksJob(reply, state.persona.occupation)) return reply;
+    onToken?.(''); // leaked the job title: discard what was streamed and retry
   }
   if (lastErr) throw lastErr;
   return '（晃了晃杯子）嗯……這個話題先跳過，再給我點酒吧。';
@@ -139,7 +130,6 @@ async function onSend(text) {
   text = String(text ?? '').trim();
   if (!text) return false;
   setBusy(true);
-  markGenerating();
   const me = addMsg('me', text);
   const histLen = state.history.length;
   state.history.push({ role: 'user', content: text });
@@ -171,26 +161,26 @@ async function onSend(text) {
       reply = REFUSAL_LINE;
     } else {
       // 3. In-character reply.
-      reply = await guestReply();
-      if (roleOnly) reply = `${ROLE_HINT_LINE}${reply}`;
-      else if (near) reply = `${NEAR_LINE}${reply}`;
+      const prefix = roleOnly ? ROLE_HINT_LINE : near ? NEAR_LINE : '';
+      // Stream into the typing bubble; never display text that already contains the job title.
+      const onToken = (t) => {
+        const shown = t && !leaksJob(t, occ) ? prefix + t : '…';
+        typing.lastChild.textContent = shown;
+        $('chat').scrollTop = $('chat').scrollHeight;
+      };
+      reply = prefix + await guestReply(onToken);
     }
   } catch (e) {
     failed = e;
     dbg('send-error', e);
   }
   typing.remove();
-  clearGenerating();
-  if (!failed) crashOk();
   if (failed) {
     // Model failure: never leave the game. Refund the turn, drop the failed exchange, let them retry.
     state.history.length = histLen;
     state.turnsLeft++;
     me.remove();
     renderStats();
-    if (failed.deviceLost || isDeviceLostError(failed)) {
-      await recoverLLM();
-    }
     addMsg('sys', `⚠️ 客人這次沒聽清楚（${failed?.message || failed}）。這則訊息不算次數，請再送一次。`);
     $('input').value = text;
     setBusy(false);
@@ -252,38 +242,18 @@ function showCard(kind, title, sub, answer, btnText, onClick) {
   c.scrollIntoView({ block: 'nearest' });
 }
 
-// Engine died (GPU device lost / OOM): reload it with the light model so the player can retry.
-async function recoverLLM() {
-  try {
-    setModelPref(LIGHT_MODEL);
-    addMsg('sys', '手機記憶體不足，正在切換為輕量模型…');
-    markGenerating();
-    state.llm = createLLM({ mock: MOCK, fake: FAKE, modelId: LIGHT_MODEL });
-    await state.llm.init(() => {});
-    clearGenerating();
-    addMsg('sys', '已切換為輕量模型（Qwen2.5 0.5B）。');
-  } catch (e) {
-    clearGenerating();
-    dbg('recover-failed', e);
-    addMsg('sys', `無法重新載入模型：${e.message || e}。請關閉其他分頁或改用桌面瀏覽器。`);
-  }
-}
-
-async function startGame(resume = null, notice = '') {
+async function startGame(resume = null) {
   $('startBtn').disabled = true;
   $('startErr').hidden = true;
   $('loading').hidden = false;
-  markGenerating(); // model loading can also OOM the tab
   try {
     state.skill = parseSkill(await fetchSkill('./skill.md'));
-    state.llm = createLLM({ mock: MOCK, fake: FAKE, modelId: getModelPref() && resume ? getModelPref() : resume?.modelId || $('modelSel').value });
+    state.llm = createLLM({ mock: MOCK, fake: FAKE });
     await state.llm.init(({ progress, text }) => {
       $('barFill').style.width = `${Math.round((progress || 0) * 100)}%`;
       $('loadText').textContent = text || '載入中…';
     });
-    clearGenerating();
   } catch (e) {
-    clearGenerating();
     $('startErr').textContent = `無法啟動：${e.message || e}`;
     $('startErr').hidden = false;
     $('startBtn').disabled = false;
@@ -299,7 +269,6 @@ async function startGame(resume = null, notice = '') {
     $('chat').innerHTML = '';
     for (const m of resume.log || []) addMsg(m.kind, m.text, m.who);
     addMsg('sys', '已從中斷處恢復遊戲。');
-    if (notice) addMsg('sys', notice);
     renderGuest(); renderStats(); setBusy(false);
     return;
   }
@@ -307,27 +276,7 @@ async function startGame(resume = null, notice = '') {
 }
 
 async function boot() {
-  const sel = $('modelSel');
-  for (const m of MODELS) sel.add(new Option(m.label, m.id));
-  if (MOCK || FAKE) {
-    sel.add(new Option(MOCK ? '模擬模式（不使用模型）' : '假引擎（開發測試）', MOCK ? 'mock' : 'fake'));
-    sel.value = MOCK ? 'mock' : 'fake';
-  }
   $('stBest').textContent = getBest();
-  // Default model: light one on phones / low-limit adapters, 1.5B on desktop; remembered choice wins.
-  let preferLight = isMobileDevice();
-  if (!MOCK && !FAKE) {
-    const gpu = await checkWebGPU();
-    if (!gpu.ok) {
-      $('gpuWarn').textContent = gpu.reason;
-      $('gpuWarn').hidden = false;
-      $('startBtn').disabled = true;
-    } else if (gpu.lowMemory) preferLight = true;
-  }
-  const pref = getModelPref();
-  if (pref && MODELS.some((m) => m.id === pref)) $('modelSel').value = pref;
-  else if (preferLight && !MOCK && !FAKE) $('modelSel').value = LIGHT_MODEL;
-  $('modelSel').addEventListener('change', () => setModelPref($('modelSel').value));
   $('startBtn').addEventListener('click', () => startGame());
   $('form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -335,29 +284,14 @@ async function boot() {
     $('input').value = '';
     onSend(v).catch((err) => { dbg('onSend-crash', err); setBusy(false); });
   });
-  // Crash detection: the generating flag survives only if the page died mid-load/generation.
-  let notice = '';
-  if (ss.get(GEN_KEY)) {
-    clearGenerating();
-    const crashes = (Number(ss.get(CRASH_KEY)) || 0) + 1;
-    ss.set(CRASH_KEY, String(crashes));
-    dbg('crash-detected', `count=${crashes}`);
-    const wasLight = (getModelPref() || '') === LIGHT_MODEL;
-    if (crashes >= 2) {
-      ss.del(SAVE_KEY); ss.del(CRASH_KEY);
-      setModelPref(LIGHT_MODEL);
-      if (MODELS.some((m) => m.id === LIGHT_MODEL)) $('modelSel').value = LIGHT_MODEL;
-      $('startErr').textContent = '頁面連續當機，可能是手機記憶體不足。請關閉其他分頁或 App、重新整理後再試，或改用桌面瀏覽器。已為你選好輕量模型。';
-      $('startErr').hidden = false;
-      return;
-    }
-    notice = wasLight ? '頁面意外重新整理，可能是記憶體不足。建議關閉其他分頁。' : '手機記憶體不足，已自動切換為輕量模型';
-    setModelPref(LIGHT_MODEL);
-    if (MODELS.some((m) => m.id === LIGHT_MODEL)) $('modelSel').value = LIGHT_MODEL;
+  if (!MOCK && !FAKE && location.protocol === 'file:') {
+    $('srvWarn').textContent = NO_SERVER_MSG;
+    $('srvWarn').hidden = false;
+    $('startBtn').disabled = true;
+    return;
   }
   const saved = loadSession();
-  if (saved && !$('startBtn').disabled) { state.resumed = true; dbg('resume', `level=${saved.level} turns=${saved.turnsLeft}`); startGame(saved, notice); }
-  else if (notice) { $('startErr').textContent = notice; $('startErr').hidden = false; }
+  if (saved) { state.resumed = true; dbg('resume', `level=${saved.level} turns=${saved.turnsLeft}`); startGame(saved); }
 }
 
 window.__game = {

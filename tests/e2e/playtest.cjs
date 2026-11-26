@@ -101,7 +101,7 @@ async function openGame(browser, base, log) {
     if (!r.url().endsWith('/favicon.ico')) watch.errors.push(`requestfailed ${r.url()} ${r.failure()?.errorText}`);
   });
   await page.goto(`${base}/index.html?${MODE === 'fake' ? 'fake=1' : 'mock=1'}`, { waitUntil: 'load' });
-  // Wait until boot() has wired the start button (non-mock mode awaits WebGPU check first).
+  // Wait until boot() has wired the start button (boot() is async).
   await page.waitForFunction(() => window.__game && !document.getElementById('startBtn').disabled, null, { timeout: 15000 });
   await page.waitForTimeout(150);
   return { context, page, watch, log };

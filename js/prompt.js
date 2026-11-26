@@ -1,10 +1,10 @@
-// Prompt construction. Small models => compact persona block + condensed rules by default.
+// Prompt construction for the local Qwen3-8B: full rulebook (minus the judge-mode dev notes) + a rich persona block.
 import { REFUSAL_LINE } from './rules.js';
 
 const CORE_HEADING = '## 核心規則（精簡版）';
-export const PERSONA_CHAR_BUDGET = 1500;
-// Rough budget (chars ~ tokens for zh with Qwen tokenizer, conservative) for the full system prompt.
-export const SYSTEM_CHAR_BUDGET = 2600;
+export const PERSONA_CHAR_BUDGET = 3000;
+// Rough budget in chars for the whole system prompt (8192-token context; Qwen3 zh ~0.7 token/char).
+export const SYSTEM_CHAR_BUDGET = 7000;
 
 export async function fetchSkill(url = './skill.md') {
   const res = await fetch(url, { cache: 'no-cache' });
@@ -30,10 +30,12 @@ export function extractSection(md, heading) {
 
 export function parseSkill(md) {
   const body = stripFrontmatter(md);
+  const judge = extractSection(body, '## 判官模式（Judge mode）');
   return {
-    full: body,
+    // The judge-mode section documents the program's guess gates; the guest never needs it.
+    full: judge ? body.replace(/\n## 判官模式（Judge mode）[\s\S]*$/, '').trim() : body,
     core: extractSection(body, CORE_HEADING),
-    judge: extractSection(body, '## 判官模式（Judge mode）'),
+    judge,
   };
 }
 
@@ -63,7 +65,7 @@ export function appearanceLine(info) {
   return bits.join('、');
 }
 
-function pickHistory(history, info, limit = 6) {
+function pickHistory(history, info, limit = 9) {
   const age = info?.age_years ?? history?.profile_age_years ?? 30;
   const tl = (history?.timeline || []).filter((t) => t.age_years <= age);
   const flat = [];
@@ -80,9 +82,9 @@ function pickHistory(history, info, limit = 6) {
     const step = Math.max(1, Math.floor(arr.length / n));
     for (let i = arr.length - 1; i >= 0 && n > 0; i -= step, n--) chosen.push(arr[i]);
   };
-  take(recent, 3);
-  take(older, 2);
-  take(early, 1);
+  take(recent, 4);
+  take(older, 3);
+  take(early, 2);
   const seen = new Set();
   return chosen.filter((e) => (seen.has(e.title) ? false : seen.add(e.title))).sort((a, b) => a.age - b.age).slice(0, limit);
 }
@@ -101,31 +103,31 @@ export function buildPersonaBlock(persona, budget = PERSONA_CHAR_BUDGET) {
   const health = [...conds, ...allergies.map((a) => `對${a}過敏`)];
   if (health.length) parts.push(`【身體小細節（別主動提）】${health.join('、')}`);
 
-  const ts = (traits.traits || []).slice(0, 3).map((t) => `${t.trait}（${clip(t.description, 30)}）`);
-  parts.push(`【個性】${ts.join('；')}。社交：${clip(traits.social_style, 50)}`);
-  const hb = (traits.habits || []).slice(0, 2).map((h) => `${h.habit}：${clip(h.description, 28)}`);
+  const ts = (traits.traits || []).slice(0, 4).map((t) => `${t.trait}（${clip(t.description, 50)}）`);
+  parts.push(`【個性】${ts.join('；')}。社交：${clip(traits.social_style, 80)}`);
+  const hb = (traits.habits || []).slice(0, 3).map((h) => `${h.habit}：${clip(h.description, 50)}`);
   if (hb.length) parts.push(`【習慣】${hb.join('；')}`);
-  const cp = (traits.catchphrases || []).slice(0, 2).map((c) => `「${c.phrase}」`);
+  const cp = (traits.catchphrases || []).slice(0, 3).map((c) => `「${c.phrase}」`);
   if (cp.length) parts.push(`【口頭禪（偶爾用）】${cp.join(' ')}`);
-  const fav = [(traits.favorite_foods || [])[0]?.food, (traits.hobbies || [])[0]?.hobby].filter(Boolean);
+  const fav = [...(traits.favorite_foods || []).slice(0, 2).map((f) => f.food), ...(traits.hobbies || []).slice(0, 2).map((h) => h.hobby)].filter(Boolean);
   if (fav.length) parts.push(`【喜好】${fav.join('、')}`);
 
-  const ev = pickHistory(history, info).map((e) => `${e.age}歲 ${clip(hide(e.title), 24)}：${clip(hide(e.description), 40)}`);
+  const ev = pickHistory(history, info).map((e) => `${e.age}歲 ${clip(hide(e.title), 30)}：${clip(hide(e.description), 70)}`);
   if (ev.length) parts.push(`【人生片段（可挑一件聊）】\n${ev.join('\n')}`);
 
   const wa = occ.work_arrangement || {};
   const hints = [];
   hints.push(`工作性質：${hide(clip(occ.workplace_type, 40))}（別逐字講出）`);
-  if (wa.schedule) hints.push(`作息：${hide(clip(wa.schedule, 50))}`);
-  if (wa.setting) hints.push(`環境：${hide(clip(wa.setting, 40))}`);
-  if (occ.tools?.length) hints.push(`常用工具：${occ.tools.slice(0, 3).map((t) => hide(t)).join('、')}`);
-  if (wa.collaboration?.length) hints.push(`合作對象：${wa.collaboration.slice(0, 2).map((c) => clip(hide(c), 16)).join('、')}`);
-  const tasks = (occ.responsibilities || []).slice(0, 3).map((r) => clip(hide(r.task), 14));
+  if (wa.schedule) hints.push(`作息：${hide(clip(wa.schedule, 80))}`);
+  if (wa.setting) hints.push(`環境：${hide(clip(wa.setting, 70))}`);
+  if (occ.tools?.length) hints.push(`常用工具：${occ.tools.slice(0, 5).map((t) => hide(t)).join('、')}`);
+  if (wa.collaboration?.length) hints.push(`合作對象：${wa.collaboration.slice(0, 3).map((c) => clip(hide(c), 24)).join('、')}`);
+  const tasks = (occ.responsibilities || []).slice(0, 5).map((r) => clip(hide(r.task), 30));
   if (tasks.length) hints.push(`日常任務：${tasks.join('、')}`);
-  if (occ.notable_experience?.title) hints.push(`印象深刻的事：${hide(clip(occ.notable_experience.title, 30))}`);
+  if (occ.notable_experience?.title) hints.push(`印象深刻的事：${hide(clip(occ.notable_experience.title, 50))}`);
   const adv = occ.advantages?.[0]?.aspect, dis = occ.disadvantages?.[0]?.aspect;
-  if (adv) hints.push(`喜歡的地方：${hide(clip(adv, 20))}`);
-  if (dis) hints.push(`辛苦的地方：${hide(clip(dis, 20))}`);
+  if (adv) hints.push(`喜歡的地方：${hide(clip(adv, 40))}`);
+  if (dis) hints.push(`辛苦的地方：${hide(clip(dis, 40))}`);
   parts.push(`【祕密職業暗示素材（只能旁敲側擊，絕不說出職稱「${occ.job_title}」或行業名稱）】\n${hints.join('\n')}`);
 
   let out = parts.join('\n');
@@ -149,8 +151,8 @@ export function buildSystemPrompt(persona, skill, { forceCompact = false } = {})
   return `${rules}\n\n# 人物資料（這就是你）\n${block}\n\n現在你坐在吧台前，調酒師開口了。請以「${persona.info.display_name}」的身分回覆，1～3 句。`;
 }
 
-// Keep only the most recent turns so we fit the 4096-token window.
-export function trimHistory(messages, maxMessages = 8, maxChars = 900) {
+// Keep only the most recent turns so we fit the 8192-token window.
+export function trimHistory(messages, maxMessages = 20, maxChars = 2400) {
   let recent = messages.slice(-maxMessages);
   let total = recent.reduce((n, m) => n + m.content.length, 0);
   while (total > maxChars && recent.length > 2) {
