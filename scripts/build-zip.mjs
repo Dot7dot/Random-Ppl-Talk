@@ -2,7 +2,9 @@
 // Builds dist/RandomPplTalk-Windows.zip for distribution.
 //
 // Zip layout (top folder RandomPplTalk/):
-//   Start-Game.bat
+//   Start-Game.bat       (Qwen3-8B)
+//   Start-Game-Lite.bat  (Qwen3-4B, passes -Small)
+//   Start-Game-CPU.bat   (CPU only, passes -CpuOnly)
 //   launcher/            (all files, from the repo's launcher/)
 //   game/                (index.html, css/, js/, skill.md, data/)
 //   README-遊戲說明.txt  (from packaging/, converted to UTF-8 BOM + CRLF)
@@ -67,7 +69,7 @@ fs.rmSync(STAGE, { recursive: true, force: true });
 const stageTop = path.join(STAGE, TOP);
 fs.mkdirSync(stageTop, { recursive: true });
 
-fs.copyFileSync(startBat, path.join(stageTop, 'Start-Game.bat'));
+for (const bat of BATS) fs.copyFileSync(path.join(ROOT, bat), path.join(stageTop, bat));
 fs.cpSync(launcherDir, path.join(stageTop, 'launcher'), { recursive: true });
 
 const gameOut = path.join(stageTop, 'game');
