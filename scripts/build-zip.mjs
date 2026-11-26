@@ -48,10 +48,12 @@ function listFiles(dir, base = dir) {
 
 // ---------- preflight: fail clearly if the Windows launcher is not in place yet ----------
 
-const startBat = path.join(ROOT, 'Start-Game.bat');
+const BATS = ['Start-Game.bat', 'Start-Game-Lite.bat', 'Start-Game-CPU.bat'];
 const launcherDir = path.join(ROOT, 'launcher');
 
-if (!exists(startBat)) fail(`Start-Game.bat is missing at ${startBat}. It is written by the launcher step; build after it exists.`);
+for (const bat of BATS) {
+  if (!exists(path.join(ROOT, bat))) fail(`${bat} is missing at ${path.join(ROOT, bat)}. Build after the launcher step has written it.`);
+}
 if (!exists(launcherDir) || !fs.statSync(launcherDir).isDirectory()) fail(`launcher/ is missing at ${launcherDir}.`);
 if (listFiles(launcherDir).length === 0) fail('launcher/ is empty.');
 for (const item of GAME_ITEMS) {

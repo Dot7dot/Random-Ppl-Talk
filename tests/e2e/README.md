@@ -61,3 +61,11 @@ node tests/e2e/adversarial.cjs
 - 結束碼：全部通過為 `0`，有失敗為 `1`。截圖存放於 `ADVERSARIAL_SHOTS`（預設為 scratchpad 下的 `adversarial/`）。
 - 注意：yes 模式下一旦誤判過關，該位客人會提前結束（遊戲已結束，無法再送訊息），因此該位客人的其餘訊息不會被測到。
 - 修正後的遊戲只在「模糊候選」時才呼叫裁判，因此這些訊息下裁判實際上不會被呼叫（`__judgeCalls` 為 0，僅作記錄，不列為失敗）。
+
+## 真實用戶端 + 假 llama-server（server.cjs）
+
+```bash
+node tests/e2e/server.cjs
+```
+
+啟動 `scripts/fake-llama-server.mjs`（`--loading-ms 4000 --think`），不加 `?mock`／`?fake`，走真正的 `/health` 輪詢與 SSE 串流路徑：驗證載入畫面（503）、逐字串流、`<think>` 過濾、直接問職業的拒絕句、猜對過關、「嗨嗨」與錯誤猜測不過關、伺服器中斷時退還次數，以及 `file://` 開啟時顯示 Start-Game.bat 提示。
