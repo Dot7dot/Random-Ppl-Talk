@@ -93,6 +93,18 @@ Random ppl talk（隨機的人聊聊）— Windows 遊戲說明
   代表已有另一個 Start-Game 視窗或程式正在使用同一個連接埠。請關閉其他的黑色視窗
   （或工作管理員中的相關程式），再重新執行啟動檔。
 
+■ 出現「無法下載 llama.cpp」或 404 錯誤（程式下載失敗）
+  啟動器會依序嘗試多個 llama.cpp 版本，並在失敗時自動查詢 GitHub 上其他可用版本。
+  若仍失敗（網路被擋、或該版本沒有 Windows 檔案），請手動下載：
+  1. 用瀏覽器開啟 https://github.com/ggml-org/llama.cpp/releases
+  2. 找一個「Assets」裡有 Windows 檔案的版本（例如 b12774），下載
+     llama-bXXXX-bin-win-vulkan-x64.zip（顯示卡版，約 37 MB）
+     想用 CPU 版則下載 llama-bXXXX-bin-win-cpu-x64.zip（約 24 MB）。
+  3. 把下載的 zip 檔「不用解壓縮」，直接放進本資料夾的 bin 資料夾，
+     再重新執行啟動檔，啟動器會自動解壓縮。
+     （也可自行解壓縮到 bin\vulkan 或 bin\cpu，資料夾內要有 llama-server.exe。）
+  程式下載會在模型之前進行，所以這個問題會在啟動後幾秒內就出現。
+
 ■ 下載中斷或檔案損毀，想重新下載
   關閉黑色視窗後，刪除本資料夾中的 models 資料夾（模型）與 bin 資料夾
   （llama.cpp 程式）內的檔案，再重新執行啟動檔即可。
