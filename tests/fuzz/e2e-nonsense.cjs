@@ -73,6 +73,7 @@ async function sendUI(page, text, { mode = 'fill' } = {}) {
   }
   const sentLen = await page.inputValue('#input').then((v) => v.length);
   await page.press('#input', 'Enter');
+  if (mode === 'unlimited') await page.evaluate(() => document.getElementById('input').setAttribute('maxlength', '200'));
   return sentLen;
 }
 

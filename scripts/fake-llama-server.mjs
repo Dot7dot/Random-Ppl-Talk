@@ -109,10 +109,10 @@ function isLoading() {
 }
 
 function isJudgeRequest(messages) {
-  const judgeRe = /是\s*或\s*否|只回答一個字|判定|judge/i;
+  // Only the dedicated judge prompt counts. (The game rulebook and the hidden 【本回合判定：…】 turn
+  // directive also contain the word 判定, so that word must not trigger judge mode.)
   const systemText = messages.filter((m) => m.role === 'system').map((m) => textOf(m.content)).join('\n');
-  const last = messages[messages.length - 1];
-  return judgeRe.test(systemText) || judgeRe.test(textOf(last.content));
+  return /遊戲裁判/.test(systemText) || (/是\s*或\s*否/.test(systemText) && /只回答一個字/.test(systemText));
 }
 
 function textOf(content) {
@@ -126,7 +126,10 @@ function buildReply(messages) {
   if (isJudgeRequest(messages)) {
     text = opts.judgeYes ? '是' : '否';
   } else {
-    text = CANNED[counter % CANNED.length];
+    const last = textOf(messages[messages.length - 1].content);
+    if (/本回合判定：答對/.test(last)) text = '（愣住後笑了）哇，被你猜中了，真的假的？';
+    else if (/【開場/.test(last)) text = '（坐下）晚安，今天想來杯威士忌。';
+    else text = CANNED[counter % CANNED.length];
   }
   if (opts.think) text = `<think>這是思考內容</think>${text}`;
   return text;
