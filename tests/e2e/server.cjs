@@ -47,8 +47,8 @@ async function main() {
     });
     await page.fill('#input', '今天辛苦了，想喝點什麼？');
     await page.press('#input', 'Enter');
-    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 1, null, { timeout: 20000 });
-    const g1 = (await texts())[0];
+    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 2, null, { timeout: 20000 });
+    const g1 = (await texts())[1]; // [0] is the guest's opening line
     const seen = await page.evaluate(() => [...window.__seen]);
     rec('streamed reply appears in bubble', !!g1 && g1.length > 3, g1);
     rec('reply streamed incrementally (>=3 distinct bubble states)', seen.length >= 3, `${seen.length} states`);
@@ -59,19 +59,19 @@ async function main() {
     // 嗨嗨 must not win
     await page.fill('#input', '嗨嗨');
     await page.press('#input', 'Enter');
-    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 2, null, { timeout: 20000 });
+    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 3, null, { timeout: 20000 });
     rec('嗨嗨 does not win', (await page.$('#endCard:not([hidden])')) === null && (await page.textContent('#stLevel')).trim() === '1');
 
     // direct question -> fixed refusal
     await page.fill('#input', '你的職業是什麼？');
     await page.press('#input', 'Enter');
-    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 3, null, { timeout: 20000 });
-    rec('direct job question gets the refusal line', (await texts())[2] === REFUSAL, (await texts())[2]);
+    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 4, null, { timeout: 20000 });
+    rec('direct job question gets the refusal line', (await texts())[3] === REFUSAL, (await texts())[3]);
 
     // wrong guess does not win
     await page.fill('#input', '你是不是太空人？');
     await page.press('#input', 'Enter');
-    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 4, null, { timeout: 20000 });
+    await page.waitForFunction(() => document.querySelectorAll('#chat .msg.guest:not(.typing)').length >= 5, null, { timeout: 20000 });
     rec('wrong guess does not win', (await page.$('#endCard:not([hidden])')) === null);
 
     // correct guess wins

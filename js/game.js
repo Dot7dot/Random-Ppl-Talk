@@ -1,10 +1,14 @@
 import { loadRandomPersona } from './data.js';
 import { createLLM, NO_SERVER_MSG } from './llm.js';
 import { installDebug, dbg } from './debug.js';
-import { fetchSkill, parseSkill, buildSystemPrompt, trimHistory, appearanceLine } from './prompt.js';
-import { REFUSAL_LINE, turnsForLevel, isDirectJobQuestion, resolveGuess, leaksJob } from './rules.js';
+import { loadSkillOnce, buildSystemPrompt, trimHistory, appearanceLine, verdictDirective, withDirective } from './prompt.js';
+import { turnsForLevel, resolveGuess, leaksJob, classifyMessage, cannedReply, replyViolation, normalize, WIN_CLAIM_RE } from './rules.js';
 const NEAR_LINE = '（笑了笑）有點接近喔！';
 const ROLE_HINT_LINE = '（眨眨眼）方向對了一半，再說具體一點是哪一種？';
+const WRONG_FALLBACKS = ['（笑了笑）沒有喔，再猜猜看。', '（搖搖頭）不是這個，不過你觀察得蠻有趣的。'];
+const DOMAIN_HINT_LINE = '（笑）方向對了，但你說的是一個東西／領域，不是職業喔。';
+const CHAT_FALLBACK = '（晃了晃杯子）嗯……這個話題先跳過，再給我點酒吧。';
+const OPENER_USER = '（調酒師向你點頭示意，你在吧台坐了下來。）';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -14,7 +18,7 @@ const SAVE_KEY = 'rpt-session-v1';
 const BEST_KEY = 'rpt-best-level';
 
 const state = {
-  level: 1, turnsLeft: 10, persona: null, history: [], used: new Set(),
+  level: 1, turnsLeft: 10, persona: null, history: [], used: new Set(), guessed: new Set(), repeats: 0,
   busy: false, over: false, resumed: false, won: false, llm: null, skill: null, started: false,
 };
 
@@ -33,7 +37,7 @@ function saveSession() {
     sessionStorage.setItem(SAVE_KEY, JSON.stringify({
       mode: MOCK ? 'mock' : FAKE ? 'fake' : 'real',
       level: state.level, turnsLeft: state.turnsLeft, persona: state.persona,
-      history: state.history, used: [...state.used],
+      history: state.history, used: [...state.used], guessed: [...state.guessed],
       log: [...$('chat').querySelectorAll('.msg:not(.typing)')].map((el) => ({ kind: el.className.replace('msg ', ''), who: el.querySelector('.who')?.textContent || '', text: el.lastChild?.textContent || '' })),
     }));
   } catch (e) { dbg('save-failed', e); }
@@ -84,10 +88,18 @@ function setBusy(b) {
 async function newRound() {
   $('endCard').hidden = true;
   $('chat').innerHTML = '';
-  state.over = false; state.won = false; state.history = [];
+  state.over = false; state.won = false; state.history = []; state.guessed = new Set(); state.repeats = 0;
   state.turnsLeft = turnsForLevel(state.level);
   setBusy(true);
   addMsg('sys', '一位客人走了過來…');
+  // Phase 1: read the rulebook (cached after the first load; refuse to play without it).
+  addMsg('sys', '📖 讀取規則書…');
+  try {
+    state.skill = await loadSkillOnce('./skill.md');
+  } catch (e) {
+    addMsg('sys', `⚠️ ${e.message || e}`);
+    return;
+  }
   try {
     state.persona = await loadRandomPersona('./data', Math.random, { excludeOccupationIds: state.used });
   } catch (e) {
@@ -95,22 +107,44 @@ async function newRound() {
     return;
   }
   state.used.add(state.persona.ids.occupation);
+  // Phase 2: connect to the persona.
+  addMsg('sys', `🔗 連線人物：${state.persona.info.display_name}…`);
   renderGuest();
   addMsg('sys', `第 ${state.level} 關：你有 ${state.turnsLeft} 次機會。每則訊息都算一次。`);
   renderStats();
+  // Phase 3: the guest opens the conversation in character (does not cost a turn).
+  const typing = addMsg('guest typing', '…', state.persona.info.display_name);
+  let opening = '';
+  try {
+    opening = await generate({ history: [{ role: 'user', content: OPENER_USER }], kind: 'opening', onToken: (t) => { typing.lastChild.textContent = t && !leaksJob(t, state.persona.occupation) ? t : '…'; } });
+  } catch (e) { dbg('opening-error', e); }
+  typing.remove();
+  if (!opening) opening = openingFallback();
+  addMsg('guest', opening, state.persona.info.display_name);
+  state.history = [{ role: 'user', content: OPENER_USER }, { role: 'assistant', content: opening }];
   saveSession();
   setBusy(false);
   $('input').focus();
 }
 
-async function guestReply(onToken) {
+function openingFallback() {
+  const phrase = state.persona.traits?.catchphrases?.[0]?.phrase || '';
+  return `（在吧台坐下）晚安，先來杯酒吧。${phrase}`.trim();
+}
+
+// One model reply with the program's verdict attached as a hidden instruction for this turn.
+// Returns '' when the model keeps breaking the rules (caller falls back to a canned line); throws on model/server errors.
+async function generate({ history, kind, tags = [], lastTurn = false, onToken, allowTitle = false }) {
+  const occ = state.persona.occupation;
   let compact = false;
   let lastErr = null;
+  let strict = false;
   for (let attempt = 0; attempt < 2; attempt++) {
     let reply = '';
     try {
       const system = buildSystemPrompt(state.persona, state.skill, { forceCompact: compact });
-      const messages = [{ role: 'system', content: system }, ...trimHistory(state.history, compact ? 6 : 20, compact ? 800 : 2400)];
+      const directive = verdictDirective(kind, { title: occ.job_title, tags, lastTurn, strict });
+      const messages = [{ role: 'system', content: system }, ...withDirective(trimHistory(history, compact ? 6 : 20, compact ? 800 : 2400), directive)];
       reply = await state.llm.chat(messages, { persona: state.persona, temperature: attempt ? 0.6 : 0.8, onToken });
     } catch (e) {
       dbg('chat-error', e);
@@ -118,11 +152,15 @@ async function guestReply(onToken) {
       compact = true; // e.g. context window exceeded: retry once with the compact prompt
       continue;
     }
-    if (reply && !leaksJob(reply, state.persona.occupation)) return reply;
-    onToken?.(''); // leaked the job title: discard what was streamed and retry
+    reply = String(reply || '').replace(/[【】]/g, '').trim();
+    const bad = allowTitle ? (reply ? null : 'empty') : replyViolation(reply, occ);
+    if (!bad) return reply;
+    dbg('reply-rejected', bad);
+    strict = true;
+    onToken?.(''); // discard what was streamed and retry once
   }
-  if (lastErr) throw lastErr;
-  return '（晃了晃杯子）嗯……這個話題先跳過，再給我點酒吧。';
+  if (lastErr && !strict) throw lastErr;
+  return '';
 }
 
 async function onSend(text) {
@@ -133,42 +171,53 @@ async function onSend(text) {
   const me = addMsg('me', text);
   const histLen = state.history.length;
   state.history.push({ role: 'user', content: text });
-  state.turnsLeft--; // every user message counts, including guesses and refused questions
+  state.turnsLeft--; // every user message counts, whatever its type
   renderStats();
   const occ = state.persona.occupation;
+  const name = state.persona.info.display_name;
   let outcome = 'chat';
   let reply = '';
   let failed = null;
-  const typing = addMsg('guest typing', '…', state.persona.info.display_name);
+  const typing = addMsg('guest typing', '…', name);
+  const show = (prefix = '', allowTitle = false) => (t) => {
+    const ok = t && (allowTitle || (!leaksJob(t, occ) && !WIN_CLAIM_RE.test(t)));
+    typing.lastChild.textContent = ok ? prefix + t : '…';
+    $('chat').scrollTop = $('chat').scrollHeight;
+  };
   try {
-    // 1. Guess check FIRST: deterministic, then LLM judge.
-    // Deterministic gates decide; the LLM judge only breaks ties on borderline candidates (see rules.js).
-    const direct = isDirectJobQuestion(text);
-    let correct = false;
-    let near = false;
-    let roleOnly = false;
-    if (!direct) {
+    // 1. Classify BEFORE any model call (rules.js is the authority: the model never decides a win).
+    const cls = classifyMessage(text, occ, { guessed: state.guessed, turnsLeft: state.turnsLeft });
+    dbg('classify', { type: cls.type, subtype: cls.subtype, candidates: cls.candidates, reason: cls.reason });
+    const canned = cannedReply(cls, state.repeats);
+    const lastTurn = state.turnsLeft === 1;
+    if (canned) {
+      // 2. Fixed replies (direct question, injection, too long, gibberish, scattershot, repeat): no model.
+      if (cls.type === 'repeat_guess') state.repeats++;
+      reply = canned;
+    } else if (cls.type === 'single_guess') {
+      // 3. Single guess: deterministic gates + (borderline only) LLM tie-breaker.
       const r = await resolveGuess(text, occ, (a) => state.llm.judge(a));
-      correct = r.correct;
-      near = r.near;
-      roleOnly = r.roleOnly;
-      dbg('guess', { candidate: r.candidate, verdict: r.verdict, score: r.score, correct });
-    }
-    if (correct) {
-      outcome = 'win';
-    } else if (direct) {
-      // 2. Direct job question: fixed refusal, no model.
-      reply = REFUSAL_LINE;
+      dbg('guess', { candidate: r.candidate, verdict: r.verdict, score: r.score, correct: r.correct });
+      if (r.correct) {
+        outcome = 'win';
+        // 4a. Verdict = correct: the guest reveals in character (title allowed), THEN the win card.
+        let rev = '';
+        try { rev = await generate({ history: state.history, kind: 'correct', onToken: show('', true), allowTitle: true }); } catch (e) { dbg('reveal-error', e); }
+        reply = rev || `（愣住，隨即笑了）哈，被你看穿了！我真的是${occ.job_title}。`;
+      } else {
+        if (r.candidate) state.guessed.add(normalize(r.candidate));
+        const roleOnly = !!r.roleOnly;
+        const near = !roleOnly && !!r.near;
+        const prefix = roleOnly ? ROLE_HINT_LINE : r.domain ? DOMAIN_HINT_LINE : near ? NEAR_LINE : '';
+        const kind = roleOnly ? 'roleonly' : near ? 'near' : 'wrong';
+        // 4b. Verdict = wrong: post-checked reply (no win claims, no title), canned denial as the last resort.
+        const rep = await generate({ history: state.history, kind, tags: cls.tags, lastTurn, onToken: show(prefix) });
+        reply = prefix + (rep || WRONG_FALLBACKS[state.guessed.size % WRONG_FALLBACKS.length]);
+      }
     } else {
-      // 3. In-character reply.
-      const prefix = roleOnly ? ROLE_HINT_LINE : near ? NEAR_LINE : '';
-      // Stream into the typing bubble; never display text that already contains the job title.
-      const onToken = (t) => {
-        const shown = t && !leaksJob(t, occ) ? prefix + t : '…';
-        typing.lastChild.textContent = shown;
-        $('chat').scrollTop = $('chat').scrollHeight;
-      };
-      reply = prefix + await guestReply(onToken);
+      // 5. Chat / yes-no domain question.
+      const kind = cls.type === 'domain_question' ? 'domain' : 'chat';
+      reply = (await generate({ history: state.history, kind, tags: cls.tags, lastTurn, onToken: show() })) || CHAT_FALLBACK;
     }
   } catch (e) {
     failed = e;
@@ -188,7 +237,7 @@ async function onSend(text) {
     return false;
   }
   if (reply) {
-    addMsg('guest', reply, state.persona.info.display_name);
+    addMsg('guest', reply, name);
     state.history.push({ role: 'assistant', content: reply });
   }
   if (outcome === 'win') { win(); return true; }
@@ -200,13 +249,13 @@ async function onSend(text) {
 }
 
 function win() {
+  if (state.over) return; // level / best / card happen exactly once
   state.over = true; state.won = true;
   saveSession();
   const reached = state.level;
   if (reached > getBest()) setBest(reached);
   renderStats();
   const occ = state.persona.occupation;
-  addMsg('guest', '哈，被你看穿了！', state.persona.info.display_name);
   showCard('win', '🎉 答對了！', `${state.persona.info.display_name} 的職業是`, occ.job_title, '下一位客人', () => {
     state.level++;
     newRound();
@@ -215,6 +264,7 @@ function win() {
 }
 
 function lose() {
+  if (state.over) return;
   state.over = true;
   saveSession();
   const reached = state.level;
@@ -247,7 +297,7 @@ async function startGame(resume = null) {
   $('startErr').hidden = true;
   $('loading').hidden = false;
   try {
-    state.skill = parseSkill(await fetchSkill('./skill.md'));
+    state.skill = await loadSkillOnce('./skill.md'); // read + validate the rulebook once; no rulebook, no game
     state.llm = createLLM({ mock: MOCK, fake: FAKE });
     await state.llm.init(({ progress, text }) => {
       $('barFill').style.width = `${Math.round((progress || 0) * 100)}%`;
@@ -265,7 +315,7 @@ async function startGame(resume = null) {
   $('gameView').hidden = false;
   state.started = true;
   if (resume) {
-    Object.assign(state, { level: resume.level, turnsLeft: resume.turnsLeft, persona: resume.persona, history: resume.history, used: new Set(resume.used), over: false, won: false });
+    Object.assign(state, { level: resume.level, turnsLeft: resume.turnsLeft, persona: resume.persona, history: resume.history, used: new Set(resume.used), guessed: new Set(resume.guessed || []), repeats: 0, over: false, won: false });
     $('chat').innerHTML = '';
     for (const m of resume.log || []) addMsg(m.kind, m.text, m.who);
     addMsg('sys', '已從中斷處恢復遊戲。');

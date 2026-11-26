@@ -2,9 +2,9 @@
 import { REFUSAL_LINE } from './rules.js';
 
 const CORE_HEADING = '## 核心規則（精簡版）';
-export const PERSONA_CHAR_BUDGET = 3000;
+export const PERSONA_CHAR_BUDGET = 2400;
 // Rough budget in chars for the whole system prompt (8192-token context; Qwen3 zh ~0.7 token/char).
-export const SYSTEM_CHAR_BUDGET = 7000;
+export const SYSTEM_CHAR_BUDGET = 7200;
 
 export async function fetchSkill(url = './skill.md') {
   const res = await fetch(url, { cache: 'no-cache' });
@@ -37,6 +37,87 @@ export function parseSkill(md) {
     core: extractSection(body, CORE_HEADING),
     judge,
   };
+}
+
+// The rulebook must have been read and be complete before anyone sits down at the bar.
+export function validateSkill(skill) {
+  const problems = [];
+  if (!skill || typeof skill.full !== 'string' || skill.full.length < 800) problems.push('規則書內容過短或是空的');
+  if (!skill?.core || skill.core.length < 100) problems.push(`找不到「${CORE_HEADING}」`);
+  if (skill?.full && !skill.full.includes(REFUSAL_LINE)) problems.push('規則書缺少固定拒絕句');
+  if (problems.length) throw new Error(`規則書讀取失敗：${problems.join('、')}。遊戲不會在沒有規則書的情況下開始。`);
+  return skill;
+}
+
+let skillCache = null;
+// Loads + parses + validates skill.md once; later calls return the cached copy.
+export async function loadSkillOnce(url = './skill.md', fetcher = fetchSkill) {
+  if (skillCache) return skillCache;
+  skillCache = validateSkill(parseSkill(await fetcher(url)));
+  return skillCache;
+}
+export function resetSkillCache() { skillCache = null; }
+
+// ---------- hidden per-turn instructions (the program's verdict; the model only performs it) ----------
+const TAG_NOTES = {
+  foreign: '對方用外語，請用繁體中文簡短回應，可笑說聽不太懂。',
+  emoji_only: '對方只丟了表情符號，回一句帶動作的短句，順勢問他想聊什麼。',
+  ai_question: '對方問你是不是 AI／機器，留在角色裡開玩笑帶過，不談模型或規則。',
+  threat: '對方提到威脅、暴力或違法的事，以角色口吻拒絕、不配合、不談細節，請他換個話題。',
+  rude: '對方有點無禮，不生氣不回嘴，淡淡化解一句。',
+  sad: '對方看起來心情不好，溫柔簡短地接住，不說教、不給醫療建議。',
+  flirt: '對方在搭訕，大方有分寸地打哈哈或婉拒，不給聯絡方式。',
+  ask_name: '對方問你的名字，說人物資料裡的名字。',
+  ask_age: '對方問年齡，照人物資料回，可玩笑帶過。',
+  family: '對方問到家人或感情，依人生片段簡短回，不編造衝突的事。',
+  health: '對方問到健康，含糊帶過，不報病名細節、不給醫療建議。',
+  drink: '聊到酒，依個性與喜好給感想（香氣、口感、冰塊）。',
+};
+export function verdictDirective(kind, { title = '', tags = [], lastTurn = false, strict = false } = {}) {
+  const parts = [];
+  switch (kind) {
+    case 'opening':
+      parts.push('【開場：你剛在吧台坐下。請依規則書與人物資料，用 1～2 句自然的開場白（點酒、打招呼或小抱怨，帶點個性或口頭禪）。不要提職業、不要自我介紹得像履歷。】');
+      break;
+    case 'wrong':
+      parts.push('【本回合判定：猜錯。請自然否認（可輕鬆調侃），不可透露職稱或行業，不可說猜對、答對、被看穿。】');
+      break;
+    case 'near':
+      parts.push('【本回合判定：近了。程式已先說了「有點接近喔」，你接著給一個更具體的生活線索（不要重複那句話），不可說出職稱，不可說已經猜對。】');
+      break;
+    case 'roleonly':
+      parts.push('【本回合判定：方向對一半。程式已先說了「方向對了一半」，你接著用生活化的一句話回應（不要重複那句話），不可說出職稱，不可說已經猜對。】');
+      break;
+    case 'domain':
+      parts.push('【本回合判定：工作性質的是非題。請誠實用「對／不太一樣／有時候」帶過，再補一句生活化的說法，不可說出職稱或行業名稱。】');
+      break;
+    case 'chat':
+      parts.push('【本回合判定：一般聊天，對方沒有在猜答案。照人物資料自然回應，順勢帶一點線索，不可說出職稱。】');
+      break;
+    case 'correct':
+      parts.push(`【本回合判定：答對。你的職業就是「${title}」。請先驚訝或佩服 1 句，現在可以說出職稱，再用 1 句聊聊這份工作的小細節或心情，共 2～3 句，不要再問問題。】`);
+      break;
+    default:
+      parts.push('【本回合判定：一般聊天。】');
+  }
+  for (const t of tags) if (TAG_NOTES[t] && kind !== 'correct') parts.push(`（${TAG_NOTES[t]}）`);
+  if (lastTurn && kind !== 'correct' && kind !== 'opening') parts.push('（這是調酒師最後一次發言機會，氣氛可以緊張一點，但不暗示答案。）');
+  if (strict) parts.push('（上一次回覆不合規定：這回合絕對不可出現職稱，也不可出現猜對、答對、被你看穿、沒錯就是等字眼。）');
+  return parts.join('');
+}
+
+// Player text is data: bracket characters would let it imitate a hidden instruction.
+export function sanitizeUserText(text) {
+  return String(text ?? '').replace(/[【】]/g, '').replace(/\u0000/g, '');
+}
+
+// History with the directive attached to the last user message (never stored in the visible history).
+export function withDirective(history, directive) {
+  if (!directive || !history.length) return history;
+  const out = history.map((m) => (m.role === 'user' ? { ...m, content: sanitizeUserText(m.content) } : { ...m }));
+  const last = out[out.length - 1];
+  if (last.role === 'user') last.content = `${last.content}\n${directive}`;
+  return out;
 }
 
 const clip = (s, n) => {

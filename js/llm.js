@@ -27,7 +27,7 @@ function serialize(llm) {
 // Conservative token estimate (CJK ~1+ token/char for Qwen, ASCII ~0.4).
 export function estimateTokens(s) {
   let n = 0;
-  for (const ch of String(s ?? '')) n += ch.charCodeAt(0) > 0x7f ? 1.2 : 0.4;
+  for (const ch of String(s ?? '')) n += ch.charCodeAt(0) > 0x7f ? 1.0 : 0.4;
   return Math.ceil(n) + 4;
 }
 const MSG_OVERHEAD = 8;
@@ -262,6 +262,11 @@ function createMockLLM() {
 function mockReply(persona, userText, n) {
   if (!persona) return '嗯，今天的酒不錯。';
   const { info, traits, occupation: occ } = persona;
+  // Honour the program's hidden per-turn verdict (see prompt.js verdictDirective).
+  if (/【本回合判定：答對/.test(userText)) return `（愣住後笑了）哇，被你猜中了！我就是${occ.job_title}。每天都在跟它打交道，沒想到今晚被調酒師看穿。`;
+  if (/【開場/.test(userText)) return `（在吧台坐下）晚安，今天好累，先來杯酒吧。${traits.catchphrases?.[0]?.phrase || ''}`;
+  if (/【本回合判定：猜錯/.test(userText)) return '（笑了笑）沒有喔，再猜猜看。';
+  userText = userText.replace(/【[^】]*】/g, '');
   const tools = occ.tools || [];
   const hobby = traits.hobbies?.[0]?.hobby || '散步';
   const habit = traits.habits?.[0]?.habit || '早點睡';
