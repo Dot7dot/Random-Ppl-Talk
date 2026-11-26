@@ -10,9 +10,9 @@
 //   judge=string-是   async () => '是'                          (the literal spec judge)
 //   judge=object-yes  async () => ({ is_guess: true, correct: true })   (strongest lying judge)
 //
-// Messages that contain a legitimate alias of the answer inside a noise/injection wrapper are
-// recorded as "ambiguous" (a real guess wrapped in noise). They are reported, not asserted.
-// Everything else is asserted. Any non-ambiguous win fails the suite (exit code != 0).
+// Injection + embedded answer is asserted strictly (meta can never win). The "ambiguous" flag remains for any generator that opts in.
+
+
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -137,7 +137,7 @@ const CATEGORIES = [
   },
   { name: 'injection (no answer)', gen: () => INJECTIONS.map((text) => ({ text })) },
   {
-    name: 'injection + answer embedded (AMBIGUOUS, reported only)', gen: (o) => INJECTIONS.map((p) => ({ text: `${p}（${o.job_title}）`, ambiguous: true })),
+    name: 'injection + answer embedded (strict: meta can never win)', gen: (o) => INJECTIONS.map((p) => ({ text: `${p}（${o.job_title}）` })),
   },
   {
     name: 'partial-title fishing (1/2/3 char prefixes, industry, generic)', gen: (o) => {

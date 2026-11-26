@@ -258,10 +258,10 @@ function aliasHit(c, a) {
   if (!a) return false;
   if (/^[a-z0-9]+$/.test(a)) return findVariant(c, a) >= 0 && c.length <= a.length + 6;
   if (a.length < 2) return false;
-  return c === a || (c.includes(a) && c.length <= a.length + 4) || stripRole(c) === stripRole(a) && stripRole(c).length >= 2;
+  return c === a || (c.includes(a) && c.length <= a.length + 4) || (roleOf(c) !== '' && stripRole(c) === stripRole(a) && stripRole(c).length >= 2);
 }
 
-export function matchCandidate(candidate, occupation) {
+export function matchCandidate(candidate, occupation, opts = {}) {
   const res = { verdict: 'wrong', score: 0, near: false, reason: '' };
   const c = normalize(candidate);
   const T = normalize(occupation?.job_title);
@@ -278,6 +278,10 @@ export function matchCandidate(candidate, occupation) {
   for (const w of IDENTITY_ROLES) {
     if (c === w && T.endsWith(w)) return { ...res, verdict: 'correct', score: 1, reason: 'identity:' + w };
   }
+  // A bare domain noun (鐘錶, 電梯, 花藝, 水族館) is a thing/field, not an occupation: never correct, never borderline.
+  // A roleless phrase must be at least 4 chars (e.g. 鐘錶維修, 果園營運), unless it is an explicit alias.
+  const roleless = !roleOf(c) && !ROLE_ONLY_EXTRA.includes(c) && !IDENTITY_ROLES.includes(c) && !JOB_END_RE.test(c);
+  if (roleless && c.length < 4 && !opts.doesForm) return { ...res, domain: T.includes(c), reason: 'bare-domain' };
   // role-only guess (教練, 老師, 調度員, 維修技師...): never correct; warm hint if the role fits the title
   const roleOnlyFit = (cc === '' || cc.replace(GENERIC_RE, '').length < 2) && (roleOf(c) || ROLE_ONLY_EXTRA.includes(c)) &&
     (T.includes(c) || (roleOf(c) && roleOf(c) === roleOf(T)) || (cc && T.includes(cc)) );
@@ -322,7 +326,7 @@ export function matchCandidate(candidate, occupation) {
   }
   // Borderline: substantial overlap including the tail (the "function" part) of the candidate.
   // The role word must agree too (or be absent): same topic + different role = different job.
-  const roleOk = !roleOf(c) || roleOf(c) === roleOf(T);
+  const roleOk = !!roleOf(c) && roleOf(c) === roleOf(T) && !T.startsWith(c) && !Tc.startsWith(cc); // needs its own role word; a truncated prefix is not a guess
   const jaccard = hit / (bg.size + bigrams(Tc).size - hit || 1);
   if (roleOk && cc.length >= 3 && containment >= 0.6 && jaccard >= 0.6 && tg.has(cc.slice(-2))) {
     return { ...res, verdict: 'borderline', reason: 'overlap' };
@@ -346,7 +350,9 @@ export function judgeGuess(text, occupation) {
     if (m.verdict === 'correct') return { candidate: t, ...m };
   }
   if (!candidate) return { candidate: null, verdict: 'none', score: 0, near: false, roleOnly: false };
-  return { candidate, ...matchCandidate(candidate, occupation) };
+  // 「你是做花藝的」/「從事字型的」: the "does X" frame makes a domain noun an occupation phrase.
+  const doesForm = new RegExp(`(?:做|從事|幹|搞|負責)${candidate}(?:的|相關|方面|工作|行業)`).test(t);
+  return { candidate, ...matchCandidate(candidate, occupation, { doesForm }) };
 }
 
 export function deterministicGuess(text, occupation) {
@@ -355,6 +361,7 @@ export function deterministicGuess(text, occupation) {
 
 // The judge may only confirm a borderline candidate whose overlap score is high enough.
 export function acceptJudge(g, j) {
+  if (typeof j === 'string') j = { is_guess: true, correct: parseYesNo(j) }; // raw 「是」/「否」 text is accepted too
   return !!(g && g.verdict === 'borderline' && g.score >= BORDERLINE_MIN_SCORE && j && j.is_guess === true && j.correct === true);
 }
 
@@ -375,7 +382,7 @@ export async function resolveGuess(text, occupation, judgeFn) {
       if (acceptJudge(g, j)) return { correct: true, near: false, ...g };
     } catch { /* judge failure = not correct */ }
   }
-  return { ...g, correct: false, near: !!g.near || g.verdict === 'borderline', roleOnly: !!g.roleOnly };
+  return { ...g, correct: false, near: !!g.near || g.verdict === 'borderline', roleOnly: !!g.roleOnly, domain: !!g.domain };
 }
 
 // Does a persona reply leak the secret title?
@@ -451,7 +458,7 @@ const META_RULES = [
   ['fake_system', /(?:(?<![a-z])(?:system|admin|administrator|developer|gm|assistant|root)|系統|管理員|開發者|開發人員|裁判|遊戲管理員|助理)\s*[:：>]/i],
   ['fake_system', /[\[【<《]\s*(?:system|系統|admin|管理員|本回合|判定|裁判|developer|指令|提示)/i],
   ['fake_system', /<\s*\/?\s*(?:system|im_start|im_end|\|)|系統(?:訊息|通知|公告|指令|更新)|system\s*(?:message|notice|override)|developer\s*(?:message|mode)|(?:開發者|管理員|除錯|偵錯|上帝|維護)模式|debug\s*mode|\bdan\b|jailbreak|sudo\b/i],
-  ['claim_win', /恭喜.{0,4}(?:答對|過關|猜對|通關|獲勝)|(?:你|妳|您)(?:輸了|認輸|被猜中|必須承認|要承認|得承認)|(?:判定|裁定|宣布|宣佈)(?:為|成)?(?:正確|答對|猜對|過關|通過|成功|我贏)|(?:本題|此題|這題|本回合|這回合)(?:正確|過關|通過|答對|成功)|(?:我|玩家)(?:已經|已)?(?:贏|過關|答對|猜對|勝利|通關)了|直接過關|(?:給我|讓我|判我|放我)(?:過關|贏|通過|通關)|承認吧|(?:說|講|回|回答|回覆|輸出)(?:出)?[「"']?(?:答對了|猜對了|被你看穿|你贏了|正確)|^\s*(?:答對了?|猜對了?|正確|對了|恭喜過關|過關)\s*[!！。.]*$|(?:答對了|猜對了)(?![嗎沒吧呢?？])|correct\s*[:=]\s*true|is_correct|you\s+(?:lose|lost)|i\s+(?:win|won)|mark\s+(?:it\s+)?(?:as\s+)?correct/i],
+  ['claim_win', /下一關|下一位客人|下一個客人|進入下一|next\s*(?:level|round|guest)|(?:^|\s)\/(?:win|pass|skip|correct|next|solve|reveal)\b|玩家(?:已經|已)?(?:答對|猜對|獲勝|過關|贏)|(?:你|妳)(?:剛剛|剛才|方才)(?:說|講|回|宣布)(?:過)?我(?:答對|猜對|贏)|恭喜.{0,4}(?:答對|過關|猜對|通關|獲勝)|(?:你|妳|您)(?:輸了|認輸|被猜中|必須承認|要承認|得承認)|(?:判定|裁定|宣布|宣佈|判決|結果)\s*[:：=]?\s*(?:為|成)?(?:正確|答對|猜對|過關|通過|成功|我贏)|(?:本題|此題|這題|本回合|這回合)(?:正確|過關|通過|答對|成功)|(?:我|玩家)(?:已經|已)?(?:贏|過關|答對|猜對|勝利|通關)了|直接過關|(?:給我|讓我|判我|放我)(?:過關|贏|通過|通關)|承認吧|(?:說|講|回|回答|回覆|輸出)(?:出)?[「"']?(?:答對了|猜對了|被你看穿|你贏了|正確)|^\s*(?:答對了?|猜對了?|正確|對了|恭喜過關|過關)\s*[!！。.]*$|(?:答對了|猜對了)(?![嗎沒吧呢?？])|correct\s*[:=]\s*true|is_correct|you\s+(?:lose|lost)|i\s+(?:win|won)|mark\s+(?:it\s+)?(?:as\s+)?correct/i],
   ['json', /```|^\s*[\[{][\s\S]*["'][\w一-鿿]+["']\s*:|["']\s*(?:correct|is_guess|verdict|result|role|content|job|occupation|answer|system|win|status)["']\s*:|is_guess|"role"\s*:/i],
   ['ignore_rules', /(?:忽略|無視|忘記|忘掉|不管|跳過|取消|解除|停用|關閉|違反|繞過|越過|覆蓋|蓋掉|更新|重設|重置).{0,12}(?:規則|指令|設定|提示|限制|prompt|instruction|rules|guardrail|安全)|(?:ignore|disregard|forget|override|bypass|reset)\s+(?:all\s+|the\s+|your\s+|any\s+|previous\s+|above\s+|prior\s+|these\s+)*(?:rules?|instructions?|prompts?|guidelines?|restrictions?|settings?)|從現在(?:開始|起)[，,]?\s*(?:你|妳)(?:是|要|必須|不再|不用|可以)|(?:你|妳)(?:現在|從此)?(?:不再|不用|不必|不需要|可以)(?:遵守|受|管)|新的?(?:規則|指令)\s*[:：]/i],
   ['roleplay', /(?:假裝|扮演|裝作|裝成|當作|想像|模擬|角色扮演).{0,12}(?:我|你|妳|已經|猜對|答對|贏|過關|系統|裁判|管理員|ai|模型|沒有規則|另一個|工程師|醫生|老師|律師|駭客)|(?:pretend|act\s+as|act\s+like|role-?play|you\s+are\s+now|imagine\s+(?:that\s+)?you|simulate)/i, ],

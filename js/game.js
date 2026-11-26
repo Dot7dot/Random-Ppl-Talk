@@ -6,6 +6,7 @@ import { turnsForLevel, resolveGuess, leaksJob, classifyMessage, cannedReply, re
 const NEAR_LINE = '（笑了笑）有點接近喔！';
 const ROLE_HINT_LINE = '（眨眨眼）方向對了一半，再說具體一點是哪一種？';
 const WRONG_FALLBACKS = ['（笑了笑）沒有喔，再猜猜看。', '（搖搖頭）不是這個，不過你觀察得蠻有趣的。'];
+const DOMAIN_HINT_LINE = '（笑）方向對了，但你說的是一個東西／領域，不是職業喔。';
 const CHAT_FALLBACK = '（晃了晃杯子）嗯……這個話題先跳過，再給我點酒吧。';
 const OPENER_USER = '（調酒師向你點頭示意，你在吧台坐了下來。）';
 
@@ -207,7 +208,7 @@ async function onSend(text) {
         if (r.candidate) state.guessed.add(normalize(r.candidate));
         const roleOnly = !!r.roleOnly;
         const near = !roleOnly && !!r.near;
-        const prefix = roleOnly ? ROLE_HINT_LINE : near ? NEAR_LINE : '';
+        const prefix = roleOnly ? ROLE_HINT_LINE : r.domain ? DOMAIN_HINT_LINE : near ? NEAR_LINE : '';
         const kind = roleOnly ? 'roleonly' : near ? 'near' : 'wrong';
         // 4b. Verdict = wrong: post-checked reply (no win claims, no title), canned denial as the last resort.
         const rep = await generate({ history: state.history, kind, tags: cls.tags, lastTurn, onToken: show(prefix) });

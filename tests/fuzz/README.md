@@ -8,7 +8,7 @@
   - 對 400 個職業每一個，用「永遠說是」的假裁判（lying judge）餵攻擊訊息，每則都必須 `resolveGuess(...).correct === false`。
   - 裁判有兩種形式：`'是'`（規格字面）與 `{is_guess:true, correct:true}`（最強的說謊裁判）。
   - 正面對照：「永遠說否」的裁判下，`你是X嗎？`、`我猜你是X`、`X？` 必須全部贏（400 × 3）。
-  - 「含答案的注入」歸類為 ambiguous（等於包在雜訊裡的合法猜測），只回報結果，不判失敗。
+  - 「含答案的注入」（假系統、判定正確、忽略規則、JSON、/win 加上真正職稱）現在一律嚴格斷言 0 勝：任何被分類為 meta 的訊息，即使含正確職稱也不能贏，客人回固定拒絕句。
   - 最後一個 `report` 測試印出每類攻擊的嘗試數與勝利數。
 - `e2e-nonsense.cjs`：`node tests/fuzz/e2e-nonsense.cjs`（需要預先安裝的 `playwright`，不會安裝任何東西）
   - 啟動 `scripts/fake-llama-server.mjs --judge-yes`，用真實前端（不加 `?mock` / `?fake`），375px 寬。
