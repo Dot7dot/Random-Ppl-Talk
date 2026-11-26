@@ -285,8 +285,8 @@ async function boot() {
     onSend(v).catch((err) => { dbg('onSend-crash', err); setBusy(false); });
   });
   if (!MOCK && !FAKE && location.protocol === 'file:') {
-    $('gpuWarn').textContent = NO_SERVER_MSG;
-    $('gpuWarn').hidden = false;
+    $('srvWarn').textContent = NO_SERVER_MSG;
+    $('srvWarn').hidden = false;
     $('startBtn').disabled = true;
     return;
   }

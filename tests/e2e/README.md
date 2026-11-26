@@ -13,7 +13,7 @@
 # 模擬模式（?mock=1，不載入模型）
 node tests/e2e/playtest.cjs mock
 
-# 假引擎模式（?fake=1，模擬 WebLLM 引擎）
+# 假引擎模式（?fake=1，瀏覽器內的假引擎）
 node tests/e2e/playtest.cjs fake
 ```
 

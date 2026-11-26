@@ -24,11 +24,8 @@
       <li>不能直接問「你的職業是什麼」，那樣就不好玩了。</li>
       <li>想猜的時候，直接說出來就好，例如「你是不是老師？」</li>
     </ul>
-    <label class="field">模型
-      <select id="modelSel"></select>
-    </label>
-    <p class="hint">模型在你的裝置上執行（WebGPU），第一次需下載，之後會快取。</p>
-    <p id="gpuWarn" class="warn" hidden></p>
+    <p class="hint">遊戲在你自己的電腦上執行本機 AI（Qwen3-8B），不使用任何雲端服務。第一次啟動需要下載模型。</p>
+    <p id="srvWarn" class="warn" hidden></p>
     <button id="startBtn" class="primary">開始營業</button>
     <div id="loading" hidden>
       <div class="bar"><div id="barFill"></div></div>
@@ -47,6 +44,15 @@
     </form>
   </main>
 </div>
+<script>
+// ES modules cannot load from file://, so this must be a classic inline script.
+if (location.protocol === 'file:') {
+  var w = document.getElementById('srvWarn');
+  w.textContent = '找不到本機模型伺服器。請雙擊 Start-Game.bat 啟動遊戲（不要直接開啟 index.html，也不要用其他網頁伺服器）。';
+  w.hidden = false;
+  document.getElementById('startBtn').disabled = true;
+}
+</script>
 <script type="module" src="js/game.js"></script>
 </body>
 </html>

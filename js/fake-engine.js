@@ -1,4 +1,4 @@
-// Dev-only stub (?fake=1) mimicking @mlc-ai/web-llm 0.2.79's MLCEngine API surface and its
+// Dev-only in-browser stub (?fake=1) with an OpenAI-style chat.completions surface and strict
 // request validation, so the non-mock control path can be exercised without a GPU.
 // Errors/messages copied from web-llm: SystemMessageOrderError, MessageOrderError,
 // ContextWindowSizeExceededError, MinValueError, "engine not loaded".
@@ -8,7 +8,7 @@ const tokens = (s) => { let n = 0; for (const ch of String(s)) n += ch.charCodeA
 function err(name, message) { const e = new Error(message); e.name = name; return e; }
 
 export async function CreateFakeEngine(modelId, engineConfig = {}, chatOpts = {}) {
-  const ctx = chatOpts.context_window_size || 4096;
+  const ctx = chatOpts.context_window_size || 8192;
   const report = engineConfig.initProgressCallback || (() => {});
   for (const p of [0.2, 0.6, 1]) { report({ progress: p, text: `Fake engine loading ${Math.round(p * 100)}%` }); await delay(15); }
 
