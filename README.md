@@ -11,10 +11,48 @@
 
 ## 技術概覽
 
-- **端側小型語言模型**：模型透過 WebLLM 在瀏覽器中執行，需要支援 WebGPU 的瀏覽器。近幾年的主流手機即可遊玩，模型會在第一次載入時下載到瀏覽器快取。
+- **本機小型語言模型**：遊戲以 Windows 壓縮檔發佈，內含 [llama.cpp](https://github.com/ggml-org/llama.cpp) 的 `llama-server`，在玩家自己的電腦上執行 Qwen3-8B（GGUF）模型，並同時提供遊戲頁面與 OpenAI 相容的 API（同一個網址）。第一次啟動需要網路下載程式與模型（約 5GB），之後完全離線，對話不會離開本機。
 - **隨機角色組合**：每位客人的資料由 House-Of-Tester 資料庫中的 4 個 JSON 檔案隨機組成，分別來自「職業」、「個人資訊」、「個人特質」與「人生經歷」，四者各自獨立抽選。
 - **遊戲規則**：對話與判定規則寫在 `skill.md` 中。
 - **資料皆為虛構**：所有角色資料皆為虛構，與現實中的人物無關。
+
+## 專案結構
+
+| 路徑 | 說明 |
+| --- | --- |
+| `index.html`, `css/`, `js/`, `skill.md`, `data/` | 遊戲本體（靜態檔案） |
+| `launcher/`, `Start-Game.bat` | Windows 啟動器：下載並啟動 llama.cpp 與模型 |
+| `packaging/` | 發佈壓縮檔使用的說明文字（`README-遊戲說明.txt`） |
+| `scripts/build-zip.mjs` | 打包 Windows 壓縮檔 |
+| `scripts/fake-llama-server.mjs` | 本機測試用的假 llama-server（任何作業系統） |
+| `scripts/sync-data.mjs`, `scripts/check-data.mjs` | 角色資料同步與檢查 |
+| `tests/` | 測試 |
+
+## 建置 Windows 壓縮檔
+
+```bash
+npm run build:zip
+```
+
+會產生 `dist/RandomPplTalk-Windows.zip`，解壓後的結構為 `RandomPplTalk/`，內含 `Start-Game.bat`、`launcher/`、`game/`、`README-遊戲說明.txt`，以及空的 `models/` 與 `bin/` 資料夾。需要 Node.js 18 以上；若系統有 `zip` 指令會優先使用，否則使用 Python 3。`dist/` 已加入 `.gitignore`。
+
+## 本機測試（任何作業系統）
+
+不需要安裝模型或 llama.cpp，可以用假的 llama-server 測試遊戲流程：
+
+```bash
+node scripts/fake-llama-server.mjs --path . --port 8080
+```
+
+然後開啟 http://127.0.0.1:8080/ 。常用參數：
+
+- `--loading-ms 3000`：模擬模型載入中（`/health` 先回 503，之後回 200）。
+- `--think`：回覆前加上 `<think>…</think>`，用來測試思考內容會被去除。
+- `--judge-yes`：判定請求一律回「是」（預設回「否」）。
+
+假伺服器的回覆是固定的罐頭台詞，不是真的模型，只用來確認介面與流程。
+
+也可以加上 `?mock=1` 參數進入測試模式，例如 `http://127.0.0.1:8080/?mock=1`。測試模式不會連接模型，適合檢查流程。
 
 ## 更新角色資料
 
@@ -26,24 +64,8 @@ node scripts/sync-data.mjs ../House-Of-Tester
 
 此指令會將四個資料夾中的 JSON 檔案壓縮後複製到 `data/`，並產生 `data/manifest.json`。不需要任何套件安裝。
 
-## 本機執行
-
-由於瀏覽器需要透過 HTTP 讀取資料，請不要直接用檔案路徑開啟 `index.html`。擇一執行以下指令，再開啟其顯示的網址：
+## 測試
 
 ```bash
-npx serve .
+npm test
 ```
-
-或
-
-```bash
-python3 -m http.server
-```
-
-## 測試模式
-
-加上 `?mock=1` 參數即可進入測試模式，例如 `http://localhost:3000/?mock=1`。測試模式不會下載模型，適合在開發或沒有 WebGPU 的環境中檢查流程。
-
-## 部署
-
-推送到 `main` 分支後，GitHub Actions（`.github/workflows/pages.yml`）會自動將整個專案部署到 GitHub Pages。
